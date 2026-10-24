@@ -1,6 +1,6 @@
 # Evomon [S3 TRADE] - WindUI Automation Hub
 
-Modern automation, battle engager, and radar script for **Evomon [S3 TRADE]** built with **WindUI**.
+Full automation, auto-quest storyline completer, battle engager, and radar script for **Evomon [S3 TRADE]** built with **WindUI**.
 
 ---
 
@@ -19,7 +19,14 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/gametil/evomon-hub/ma
 
 ---
 
-## ✨ Features & Fixes
+## ✨ Features
+
+### 📜 Full Auto Quest & Storyline Completer (NEW!)
+- **Follows Any Quest**: Dynamically reads your active storyline or side quest using `TaskController` and `GoalConfig`.
+- **Target Evomon Hunter**: Automatically identifies the specific Evomon required by the quest (e.g. Datubud in Amber Acres), teleports to it, and initiates battle.
+- **NPC Dialogue & Boss Solver**: Automatically interacts with NPCs and challenges quest bosses.
+- **Auto Turn-In & Claim**: The instant a quest is finished, the bot automatically turns it in via `ReqCompleteTask`, collects all gems & rewards, closes popups, and accepts the next quest in line!
+- **Live Quest Dashboard**: Displays live Quest Name, Task ID, Current/Target progress, and Claim status directly in the WindUI hub.
 
 ### 🏝️ Island Progression Auto Farm & Active Combat
 - **Active Battle Initiator**: Teleports to wild Evomons and immediately triggers combat using `BattleService.enterPetBattle`.

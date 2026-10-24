@@ -4,6 +4,7 @@
     WindUI Modern Interface
 
     Features:
+      - Full Auto Quest & Storyline Completer (Hunts target Evomons, talks to NPCs, claims rewards, advances quests)
       - Clean ESP Visualizer (Bug-free instant wipe on toggle OFF)
       - Island Progression Auto Farm (Farms island, advances to next island, kills boss)
       - Active Wild Evomon Fighting (Teleports & initiates battle via BattleService)
@@ -41,6 +42,7 @@ end
 
 local Config = ReplicatedStorage:WaitForChild("Config", 30)
 local PetConfig = Config and require(Config:WaitForChild("PetConfig", 10))
+local GoalConfig = Config and require(Config:WaitForChild("GoalConfig", 10))
 local UIManager = require(ReplicatedStorage.Core.UI.UIManager)
 
 local BattleService = nil
@@ -73,7 +75,7 @@ local Window = WindUI:CreateWindow({
     Icon = "sparkles",
     Author = "by Antigravity & WindUI",
     Folder = "EvomonHubConfig",
-    Size = UDim2.fromOffset(640, 530),
+    Size = UDim2.fromOffset(640, 540),
     Theme = "Dark",
     Transparent = true,
     Resizable = true,
@@ -117,6 +119,11 @@ local IslandData = {
 -- State Variables
 local HubState = {
     Running = true,
+    -- Auto Quest System
+    AutoQuest = false,
+    AutoQuestClaim = true,
+    QuestStepDelay = 3.0,
+    LastQuestStep = 0,
     -- Island Progression Auto Farm
     IslandAutoFarm = false,
     CurrentIslandIndex = 1,
@@ -362,6 +369,207 @@ local function GetCreaturesNearPos(targetPos, maxRadius)
     return nearby
 end
 
+-- ====================
+-- AUTO QUEST CONTROLLER
+-- ====================
+
+local function GetCurrentQuestInfo()
+    local tc = nil
+    pcall(function()
+        tc = require(ReplicatedStorage.Controller.TaskController)
+    end)
+    local taskDerived = tc and tc.getAcceptedMainTaskDerivedData and tc.getAcceptedMainTaskDerivedData()
+    local taskService = nil
+    pcall(function()
+        taskService = require(ReplicatedStorage.Script.Task.TaskService)
+    end)
+    local mainTask = nil
+    if taskService and taskService.getCurrMainTask then
+        local code, task = taskService.getCurrMainTask()
+        if code == 20000 and task then
+            mainTask = task
+        end
+    end
+
+    local taskId = (taskDerived and taskDerived.taskId) or (mainTask and mainTask.id)
+    local taskName = (taskDerived and taskDerived.taskName) or (mainTask and mainTask.taskTitle) or "No Active Quest"
+    local progressText = (taskDerived and taskDerived.progressText) or ""
+    local isClaimable = (taskDerived and taskDerived.isClaimable) or false
+    local isCompleted = (taskDerived and taskDerived.isCompleted) or false
+
+    local goalInfo = nil
+    pcall(function()
+        local gCfg = GoalConfig or require(ReplicatedStorage.Config.GoalConfig)
+        if mainTask and mainTask.goals and mainTask.goals[1] and mainTask.goals[1][1] then
+            local goalId = mainTask.goals[1][1]
+            goalInfo = gCfg[goalId]
+        elseif taskId and gCfg[taskId] then
+            goalInfo = gCfg[taskId]
+        end
+    end)
+
+    return {
+        taskId = taskId,
+        name = taskName,
+        progress = progressText,
+        isClaimable = isClaimable,
+        isCompleted = isCompleted,
+        mainTask = mainTask,
+        taskDerived = taskDerived,
+        goal = goalInfo
+    }
+end
+
+-- Fully executes whatever the active quest requires
+local function ExecuteQuestStep()
+    if IsInBattle() then return end
+    DismissBlockingWindows()
+
+    local quest = GetCurrentQuestInfo()
+    if not quest or not quest.taskId then return end
+
+    -- Step 1: If quest is already completed or ready to claim, turn it in immediately!
+    if quest.isClaimable or quest.isCompleted then
+        pcall(function()
+            Remote.Task.ReqCompleteTask:InvokeServer(quest.taskId)
+        end)
+        pcall(function()
+            local tc = require(ReplicatedStorage.Controller.TaskController)
+            if tc and tc.claimTask then tc.claimTask(quest.taskId) end
+        end)
+        DismissBlockingWindows()
+        WindUI:Notify({
+            Title = "Quest Completed!",
+            Content = "Claimed " .. quest.name .. "!",
+            Duration = 3,
+            Icon = "check"
+        })
+        return
+    end
+
+    local gType = quest.goal and quest.goal.type
+    local gParams = quest.goal and quest.goal.params
+
+    -- Step 2: Goal Type 4 or 5: Catch / Defeat specific Evomon
+    if gType == 4 or gType == 5 then
+        local targetCfgId = gParams and gParams[1]
+        local creatures = FetchWildCreatures()
+        local targetCreature = nil
+
+        if targetCfgId then
+            for _, c in ipairs(creatures) do
+                if c.cfgId == targetCfgId then
+                    targetCreature = c
+                    break
+                end
+            end
+        end
+
+        if targetCreature then
+            TeleportTo(targetCreature.cframe)
+            task.delay(0.2, function()
+                if not IsInBattle() and BattleService and BattleService.enterPetBattle then
+                    pcall(function()
+                        BattleService.enterPetBattle(tostring(targetCreature.uid))
+                    end)
+                end
+            end)
+            return
+        else
+            -- If creature is not currently nearby, check which island the quest mentions and warp there
+            for _, isl in ipairs(IslandData) do
+                local islandCleanName = isl.name:match("%((.+)%)") or isl.name
+                if string.find(quest.name:lower(), islandCleanName:lower()) then
+                    TeleportTo(isl.pos)
+                    return
+                end
+            end
+        end
+
+    -- Goal Type 10: Dialogue / Talk to NPC
+    elseif gType == 10 then
+        local npcId = gParams and gParams[1]
+        if npcId then
+            pcall(function()
+                if Remote:FindFirstChild("Dialogue") then
+                    if Remote.Dialogue:FindFirstChild("ReqReceiveDialogueTask") then
+                        Remote.Dialogue.ReqReceiveDialogueTask:InvokeServer(npcId)
+                    end
+                    if Remote.Dialogue:FindFirstChild("ReqMarkDialogueTalkCompleted") then
+                        Remote.Dialogue.ReqMarkDialogueTalkCompleted:FireServer(npcId)
+                    end
+                    if Remote.Dialogue:FindFirstChild("ReqCompleteDialogueTask") then
+                        Remote.Dialogue.ReqCompleteDialogueTask:InvokeServer(npcId)
+                    end
+                end
+            end)
+        end
+
+    -- Goal Type 22 or 39: Defeat NPC / Boss
+    elseif gType == 22 or gType == 39 then
+        local npcId = gParams and gParams[1]
+        if npcId then
+            pcall(function()
+                if Remote.Battle:FindFirstChild("ReqEnterNpcBattle") then
+                    Remote.Battle.ReqEnterNpcBattle:FireServer(npcId)
+                end
+                if Remote.Battle:FindFirstChild("ReqEnterActualNpcBattle") then
+                    Remote.Battle.ReqEnterActualNpcBattle:InvokeServer(npcId)
+                end
+            end)
+        end
+
+    -- Goal Type 34: Feed Evomon
+    elseif gType == 34 then
+        pcall(function()
+            local ps = require(ReplicatedStorage.Script.Pet.PetService)
+            local mainPet = ps.getMainPetUid()
+            if mainPet then
+                ps.reqPetAddExpByItems(mainPet, {{id = 4000022, num = 1}})
+                ps.reqPetInteraction(mainPet, 1)
+            end
+        end)
+
+    -- Goal Type 41: Arrive at Island
+    elseif gType == 41 then
+        local islandId = gParams and gParams[1]
+        if islandId and IslandData[islandId] then
+            TeleportTo(IslandData[islandId].pos)
+            return
+        end
+
+    -- Goal Type 42: Breakthrough tier
+    elseif gType == 42 then
+        TriggerLevelBreakthrough()
+        return
+
+    -- Goal Type 40 or 8: Level up Evomon / Reach Level
+    elseif gType == 40 or gType == 8 then
+        TriggerLevelBreakthrough()
+        pcall(function()
+            local ps = require(ReplicatedStorage.Script.Pet.PetService)
+            local mainPet = ps.getMainPetUid()
+            if mainPet then
+                ps.reqPetAddExpByItems(mainPet, {{id = 4000022, num = 3}})
+            end
+        end)
+    end
+
+    -- Step 3: Trigger in-game Quest Guide button (MainWindow.QuestButton)
+    pcall(function()
+        local open = UIManager:getOpenedUIWindowList()
+        for _, w in ipairs(open or {}) do
+            if w.name == "MainWindow" and w.QuestButton then
+                local conns = getconnections(w.QuestButton.MouseButton1Click)
+                for _, c in ipairs(conns) do
+                    c:Fire()
+                end
+                break
+            end
+        end
+    end)
+end
+
 -- Codes list
 local ActiveCodes = {
     "240evoRISE",
@@ -432,6 +640,11 @@ end
 -- UI TABS SETUP
 -- ====================
 
+local TabQuest = Window:Tab({
+    Title = "Auto Quest & Story",
+    Icon = "scroll",
+})
+
 local TabIslandFarm = Window:Tab({
     Title = "Island Auto Farm",
     Icon = "swords",
@@ -458,7 +671,113 @@ local TabPlayer = Window:Tab({
 })
 
 -- ===================================================
--- TAB 1: ISLAND PROGRESSION AUTO FARM & BOSS KILLER
+-- TAB 1: AUTO QUEST & STORYLINE COMPLETER
+-- ===================================================
+
+TabQuest:Section({ Title = "Live Story & Quest Tracker" })
+
+local QuestStatusPara = TabQuest:Paragraph({
+    Title = "Current Active Quest",
+    Desc = "Scanning current quest from game..."
+})
+
+TabQuest:Section({ Title = "Autonomous Quest Solver" })
+
+TabQuest:Toggle({
+    Title = "Enable Auto Quest (Follows Any Quest)",
+    Desc = "Reads your active quest, teleports to objectives/monsters, engages battles, talks to NPCs, feeds Evomons, claims rewards, and advances continuously!",
+    Value = false,
+    Callback = function(state)
+        HubState.AutoQuest = state
+        if state then
+            WindUI:Notify({
+                Title = "Auto Quest Started!",
+                Content = "Executing current quest objectives...",
+                Duration = 3,
+                Icon = "play"
+            })
+            task.spawn(ExecuteQuestStep)
+        else
+            WindUI:Notify({
+                Title = "Auto Quest Stopped",
+                Content = "Auto quest paused.",
+                Duration = 2,
+                Icon = "x"
+            })
+        end
+    end
+})
+
+TabQuest:Toggle({
+    Title = "Auto Claim Completed Quests",
+    Desc = "Automatically turns in completed quests and accepts the next storyline quest",
+    Value = true,
+    Callback = function(state)
+        HubState.AutoQuestClaim = state
+    end
+})
+
+TabQuest:Slider({
+    Title = "Quest Action Interval",
+    Desc = "Time in seconds between automated quest step actions",
+    Value = { Min = 1.5, Max = 8, Default = 3 },
+    Step = 0.5,
+    Callback = function(val)
+        HubState.QuestStepDelay = val
+    end
+})
+
+TabQuest:Section({ Title = "Manual Quest Actions" })
+
+TabQuest:Button({
+    Title = "Do Quest Step Now",
+    Desc = "Forces the bot to perform the next quest action immediately",
+    Callback = function()
+        task.spawn(ExecuteQuestStep)
+        WindUI:Notify({ Title = "Executing Quest", Content = "Processing active quest step...", Duration = 2, Icon = "zap" })
+    end
+})
+
+TabQuest:Button({
+    Title = "Claim Current Quest Rewards",
+    Desc = "Manually triggers ReqCompleteTask for your current quest",
+    Callback = function()
+        local q = GetCurrentQuestInfo()
+        if q and q.taskId then
+            local res = Remote.Task.ReqCompleteTask:InvokeServer(q.taskId)
+            DismissBlockingWindows()
+            WindUI:Notify({
+                Title = "Quest Claim Result",
+                Content = "Response code: " .. tostring(res),
+                Duration = 3,
+                Icon = "gift"
+            })
+        end
+    end
+})
+
+TabQuest:Button({
+    Title = "Click In-Game Quest Guide",
+    Desc = "Triggers the in-game HUD quest guide button (MainWindow.QuestButton)",
+    Callback = function()
+        pcall(function()
+            local open = UIManager:getOpenedUIWindowList()
+            for _, w in ipairs(open or {}) do
+                if w.name == "MainWindow" and w.QuestButton then
+                    local conns = getconnections(w.QuestButton.MouseButton1Click)
+                    for _, c in ipairs(conns) do
+                        c:Fire()
+                    end
+                    break
+                end
+            end
+        end)
+        WindUI:Notify({ Title = "Quest Guide Clicked", Content = "Triggered game quest guide.", Duration = 2, Icon = "compass" })
+    end
+})
+
+-- ===================================================
+-- TAB 2: ISLAND PROGRESSION AUTO FARM & BOSS KILLER
 -- ===================================================
 
 TabIslandFarm:Section({ Title = "Progression Auto Farm" })
@@ -664,7 +983,7 @@ TabIslandFarm:Button({
 })
 
 -- ===================================================
--- TAB 2: WILD EVOMONS & ESP (WITH CLEAN TOGGLE OFF)
+-- TAB 3: WILD EVOMONS & ESP (WITH CLEAN TOGGLE OFF)
 -- ===================================================
 
 TabRadar:Section({ Title = "Wild Evomon Radar & ESP" })
@@ -781,7 +1100,7 @@ TabRadar:Button({
 })
 
 -- ===================================================
--- TAB 3: AUTO REWARDS & CODES
+-- TAB 4: AUTO REWARDS & CODES
 -- ===================================================
 
 TabRewards:Section({ Title = "One-Click Promo Code Redemption" })
@@ -868,7 +1187,7 @@ TabRewards:Button({
 })
 
 -- ===================================================
--- TAB 4: WORLD TELEPORTS
+-- TAB 5: WORLD TELEPORTS
 -- ===================================================
 
 TabTeleports:Section({ Title = "Island Waypoints" })
@@ -897,7 +1216,7 @@ TabTeleports:Button({
 })
 
 -- ===================================================
--- TAB 5: PLAYER & UTILITIES
+-- TAB 6: PLAYER & UTILITIES
 -- ===================================================
 
 TabPlayer:Section({ Title = "Character Modifiers" })
@@ -1076,6 +1395,15 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
             if HubState.AutoClaimLevelRewards then
                 TriggerClaimLevelRewards()
             end
+            -- Auto-claim quest if it was completed during battle
+            if HubState.AutoQuest or HubState.AutoQuestClaim then
+                local q = GetCurrentQuestInfo()
+                if q and (q.isClaimable or q.isCompleted) then
+                    pcall(function()
+                        Remote.Task.ReqCompleteTask:InvokeServer(q.taskId)
+                    end)
+                end
+            end
         end)
 
         -- Check if Island farm quota reached
@@ -1109,9 +1437,16 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- Island Progression Auto Farm Loop (Teleport & Actively Engage Battle)
     local now = os.clock()
-    if HubState.IslandAutoFarm and not currentCombat and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
+
+    -- Auto Quest Solver Loop
+    if HubState.AutoQuest and not currentCombat and (now - HubState.LastQuestStep >= HubState.QuestStepDelay) then
+        HubState.LastQuestStep = now
+        task.spawn(ExecuteQuestStep)
+    end
+
+    -- Island Progression Auto Farm Loop (Only if AutoQuest is not busy)
+    if HubState.IslandAutoFarm and not HubState.AutoQuest and not currentCombat and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
         if HubState.AutoDismissPopups then
             DismissBlockingWindows()
         end
@@ -1135,7 +1470,6 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
                 if #islandEvomons > 0 then
                     local target = islandEvomons[1]
                     TeleportTo(target.cframe)
-                    -- Actively initiate battle with the target creature!
                     task.delay(0.18, function()
                         if not IsInBattle() and BattleService and BattleService.enterPetBattle then
                             pcall(function()
@@ -1144,7 +1478,6 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
                         end
                     end)
                 else
-                    -- Move to island center if none in immediate range
                     TeleportTo(curIsland.pos)
                 end
             end
@@ -1250,6 +1583,21 @@ task.spawn(function()
                 end
             end
 
+            -- Update Live Quest Status
+            local qInfo = GetCurrentQuestInfo()
+            if qInfo and qInfo.taskId then
+                local statusStr = HubState.AutoQuest and "🟢 Active (Completing Quest)" or "⚪ Idle"
+                local claimStr = (qInfo.isClaimable or qInfo.isCompleted) and "🎁 READY TO CLAIM!" or "⏳ In Progress"
+                QuestStatusPara:SetDesc(string.format(
+                    "Status: %s\n📜 Quest: %s\n🎯 Progress: %s\n✨ State: %s\n🆔 Task ID: %d",
+                    statusStr,
+                    qInfo.name,
+                    qInfo.progress ~= "" and qInfo.progress or "Tracking",
+                    claimStr,
+                    qInfo.taskId
+                ))
+            end
+
             -- Update UI Dashboards
             local creatures = FetchWildCreatures()
             local closest = HubState.ClosestEvomon
@@ -1282,6 +1630,8 @@ _G.EvomonHub = {
     ClaimMail = ClaimMail,
     ClaimDaily = ClaimDaily,
     ClearAllESP = ClearAllESP,
+    GetCurrentQuestInfo = GetCurrentQuestInfo,
+    ExecuteQuestStep = ExecuteQuestStep,
     TriggerLevelBreakthrough = TriggerLevelBreakthrough,
     TriggerClaimLevelRewards = TriggerClaimLevelRewards,
     DismissBlockingWindows = DismissBlockingWindows,
@@ -1304,9 +1654,9 @@ _G.EvomonHub = {
 
 WindUI:Notify({
     Title = "Evomon Hub Ready!",
-    Content = "Active Battle Engager, Controlled V-Mode & Auto Leveling are operational!",
+    Content = "Full Auto Quest & Story Completer is operational!",
     Duration = 4,
-    Icon = "sparkles"
+    Icon = "scroll"
 })
 
 return Window
