@@ -273,9 +273,17 @@ local function SetAutoBattleState(enable)
         BattleService.autoBattle(enable)
     end)
     local inBattle, battleWin = IsWindowOpen("MainBattleWindow")
-    if inBattle and battleWin and battleWin.class and battleWin.class.setAutoButton then
+    if inBattle and battleWin then
         pcall(function()
-            battleWin.class.setAutoButton(battleWin, enable)
+            if battleWin.setAutoButton then
+                battleWin:setAutoButton(enable)
+            elseif battleWin.class and battleWin.class.setAutoButton then
+                battleWin.class.setAutoButton(battleWin, enable)
+            end
+            if enable and battleWin.AutoButton then
+                for _, c in ipairs(getconnections(battleWin.AutoButton.MouseButton1Click)) do c:Fire() end
+                for _, c in ipairs(getconnections(battleWin.AutoButton.Activated)) do c:Fire() end
+            end
         end)
     end
 end
@@ -671,29 +679,29 @@ local function ExecuteQuestStep()
         -- 2. Search workspace / RuntimeCache directly for the NPC model
         if not targetNPC then
             pcall(function()
-                local searchFolders = {
-                    workspace:FindFirstChild("RuntimeCache") and workspace.RuntimeCache:FindFirstChild("RuntimeCacheServer") and workspace.RuntimeCache.RuntimeCacheServer:FindFirstChild("CreatureModelCache"),
-                    workspace:FindFirstChild("NPC"),
-                    workspace:FindFirstChild("Npcs"),
-                    workspace:FindFirstChild("Map")
-                }
-                for _, folder in ipairs(searchFolders) do
-                    if folder and not targetNPC then
-                        for _, child in ipairs(folder:GetChildren()) do
-                            local match = false
-                            if trainerName and string.find(child.Name:lower(), trainerName:lower()) then match = true end
-                            if trainerModel and string.find(child.Name:lower(), trainerModel:lower()) then match = true end
-                            if trainerId and string.find(child.Name, tostring(trainerId)) then match = true end
-                            if match then
-                                local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart") or child:FindFirstChild("HumanoidRootPart")
-                                if primary then
-                                    targetNPC = {
-                                        uid = child.Name,
-                                        cframe = primary.CFrame,
-                                        name = trainerName or child.Name
-                                    }
-                                    break
-                                end
+                local cache = workspace:FindFirstChild("RuntimeCache")
+                if cache then cache = cache:FindFirstChild("RuntimeCacheServer") end
+                if cache then cache = cache:FindFirstChild("CreatureModelCache") end
+                if cache then
+                    for _, model in ipairs(cache:GetChildren()) do
+                        local isMatch = false
+                        if model.Name == tostring(trainerId) then isMatch = true end
+                        if trainerModel and (model.Name == trainerModel or model:FindFirstChild(trainerModel)) then isMatch = true end
+                        if trainerName and string.find(model.Name:lower(), trainerName:lower()) then isMatch = true end
+                        for _, sub in ipairs(model:GetChildren()) do
+                            if trainerModel and string.find(sub.Name:lower(), trainerModel:lower()) then isMatch = true end
+                            if trainerName and string.find(sub.Name:lower(), trainerName:lower()) then isMatch = true end
+                        end
+                        if isMatch then
+                            local root = model:FindFirstChild("HumanoidRootPart", true) or model:FindFirstChildWhichIsA("BasePart", true)
+                            if root then
+                                targetNPC = {
+                                    uid = model.Name,
+                                    cframe = root.CFrame,
+                                    name = trainerName or model.Name,
+                                    modelInstance = model
+                                }
+                                break
                             end
                         end
                     end
@@ -703,7 +711,7 @@ local function ExecuteQuestStep()
 
         -- 3. If target NPC found, teleport directly and challenge!
         if targetNPC and targetNPC.cframe then
-            TeleportTo(targetNPC.cframe + Vector3.new(0, 0, 3))
+            TeleportTo(targetNPC.cframe + Vector3.new(0, 0, 3.5))
             task.delay(0.25, function()
                 if IsInBattle() then return end
                 local mainPetUid = nil
@@ -712,39 +720,56 @@ local function ExecuteQuestStep()
                     if ps and ps.getMainPetUid then mainPetUid = tostring(ps.getMainPetUid()) end
                 end)
 
-                local targetCid = tonumber(targetNPC.uid) or trainerId or 1004
+                local realTrainerId = trainerId or 1004
                 local bId = tonumber(battlePoolId) or 11000004
+                local modelUid = tonumber(targetNPC.uid)
 
-                -- Invoke battle entry via BattleService & Remotes with full parameter sets
+                -- 1. Fire enterActualNpcBattle with official trainerId
                 pcall(function()
                     if BattleService and BattleService.enterActualNpcBattle and mainPetUid then
-                        BattleService.enterActualNpcBattle(targetCid, bId, mainPetUid)
+                        BattleService.enterActualNpcBattle(realTrainerId, bId, mainPetUid)
                     end
                 end)
+
+                -- 2. Fire enterNpcBattle
                 pcall(function()
                     if BattleService and BattleService.enterNpcBattle then
-                        BattleService.enterNpcBattle(targetCid, bId)
+                        BattleService.enterNpcBattle(realTrainerId, bId)
+                        if modelUid then
+                            BattleService.enterNpcBattle(modelUid, bId)
+                        end
                     end
                 end)
+
+                -- 3. Fire Remotes
                 pcall(function()
                     if Remote and Remote:FindFirstChild("Battle") and Remote.Battle:FindFirstChild("ReqEnterNpcBattle") then
                         if mainPetUid then
-                            Remote.Battle.ReqEnterNpcBattle:FireServer(targetCid, bId, mainPetUid)
+                            Remote.Battle.ReqEnterNpcBattle:FireServer(realTrainerId, bId, mainPetUid)
                         end
-                        Remote.Battle.ReqEnterNpcBattle:FireServer(targetCid, bId)
+                        Remote.Battle.ReqEnterNpcBattle:FireServer(realTrainerId, bId)
+                        if modelUid and mainPetUid then
+                            Remote.Battle.ReqEnterNpcBattle:FireServer(modelUid, bId, mainPetUid)
+                        end
                     end
                 end)
 
-                -- Check ProximityPrompt on model if any
+                -- 4. Fire ProximityPrompt on model if present
                 pcall(function()
-                    local cache = workspace:FindFirstChild("RuntimeCache")
-                    if cache then cache = cache:FindFirstChild("RuntimeCacheServer") end
-                    if cache then cache = cache:FindFirstChild("CreatureModelCache") end
-                    local m = cache and (cache:FindFirstChild(tostring(targetNPC.uid)) or (trainerModel and cache:FindFirstChild(trainerModel)))
+                    local m = targetNPC.modelInstance
+                    if not m and workspace:FindFirstChild("RuntimeCache") then
+                        m = workspace.RuntimeCache.RuntimeCacheServer.CreatureModelCache:FindFirstChild(tostring(targetNPC.uid))
+                    end
                     if m then
                         for _, desc in ipairs(m:GetDescendants()) do
-                            if desc:IsA("ProximityPrompt") and fireproximityprompt then
-                                fireproximityprompt(desc)
+                            if desc:IsA("ProximityPrompt") then
+                                desc.HoldDuration = 0
+                                desc.RequiresLineOfSight = false
+                                if fireproximityprompt then
+                                    fireproximityprompt(desc)
+                                end
+                                for _, c in ipairs(getconnections(desc.Triggered)) do c:Fire() end
+                                for _, c in ipairs(getconnections(desc.PromptButtonHoldBegan)) do c:Fire() end
                             end
                         end
                     end
