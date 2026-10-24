@@ -295,6 +295,220 @@ local function SetAutoBattleState(enable)
     end
 end
 
+-- ===================================================
+-- SMART ELEMENTAL COMBAT & DAMAGE OPTIMIZER ENGINE
+-- ===================================================
+
+local ElementNames = {
+    [1] = "Normal", [2] = "Fire", [3] = "Water", [4] = "Grass",
+    [5] = "Electric", [6] = "Ice", [7] = "Fighting", [8] = "Ground",
+    [9] = "Rock", [10] = "Flying", [11] = "Bug", [12] = "Dragon",
+    [13] = "Psychic", [14] = "Poison", [15] = "Light", [16] = "Dark",
+    [17] = "Steel"
+}
+
+local ElementIcons = {
+    [1] = "⚪", [2] = "🔥", [3] = "💧", [4] = "🌿",
+    [5] = "⚡", [6] = "❄️", [7] = "🥊", [8] = "🏜️",
+    [9] = "🪨", [10] = "🦅", [11] = "🐛", [12] = "🐉",
+    [13] = "🔮", [14] = "☠️", [15] = "✨", [16] = "🌑",
+    [17] = "🛡️"
+}
+
+-- Built-in 17-element type counter chart (Attacker -> Defender -> Damage Multiplier)
+local TypeCounters = {
+    [2] = {[4] = 2.0, [6] = 2.0, [11] = 2.0, [17] = 2.0, [3] = 0.5, [9] = 0.5, [2] = 0.5, [12] = 0.5}, -- Fire counters Grass, Ice, Bug, Steel
+    [3] = {[2] = 2.0, [8] = 2.0, [9] = 2.0, [4] = 0.5, [3] = 0.5, [12] = 0.5}, -- Water counters Fire, Ground, Rock
+    [4] = {[3] = 2.0, [8] = 2.0, [9] = 2.0, [2] = 0.5, [4] = 0.5, [10] = 0.5, [11] = 0.5, [14] = 0.5, [12] = 0.5, [17] = 0.5}, -- Grass counters Water, Ground, Rock
+    [5] = {[3] = 2.0, [10] = 2.0, [5] = 0.5, [4] = 0.5, [12] = 0.5, [8] = 0.0}, -- Electric counters Water, Flying
+    [8] = {[2] = 2.0, [5] = 2.0, [14] = 2.0, [9] = 2.0, [17] = 2.0, [4] = 0.5, [11] = 0.5, [10] = 0.0}, -- Ground counters Fire, Electric, Poison, Rock, Steel
+    [9] = {[2] = 2.0, [6] = 2.0, [10] = 2.0, [11] = 2.0, [7] = 0.5, [8] = 0.5, [17] = 0.5}, -- Rock counters Fire, Ice, Flying, Bug
+    [6] = {[4] = 2.0, [8] = 2.0, [10] = 2.0, [12] = 2.0, [2] = 0.5, [3] = 0.5, [6] = 0.5, [17] = 0.5}, -- Ice counters Grass, Ground, Flying, Dragon
+    [7] = {[1] = 2.0, [6] = 2.0, [9] = 2.0, [16] = 2.0, [17] = 2.0, [10] = 0.5, [13] = 0.5, [11] = 0.5, [14] = 0.5}, -- Fighting counters Normal, Ice, Rock, Dark, Steel
+    [10] = {[4] = 2.0, [7] = 2.0, [11] = 2.0, [5] = 0.5, [9] = 0.5, [17] = 0.5}, -- Flying counters Grass, Fighting, Bug
+    [11] = {[4] = 2.0, [13] = 2.0, [16] = 2.0, [2] = 0.5, [7] = 0.5, [10] = 0.5, [14] = 0.5, [17] = 0.5}, -- Bug counters Grass, Psychic, Dark
+    [13] = {[7] = 2.0, [14] = 2.0, [13] = 0.5, [17] = 0.5, [16] = 0.0}, -- Psychic counters Fighting, Poison
+    [14] = {[4] = 2.0, [15] = 2.0, [14] = 0.5, [8] = 0.5, [9] = 0.5, [17] = 0.0}, -- Poison counters Grass, Light
+    [16] = {[13] = 2.0, [7] = 0.5, [16] = 0.5, [15] = 0.5}, -- Dark counters Psychic
+    [12] = {[12] = 2.0, [17] = 0.5, [15] = 0.0}, -- Dragon counters Dragon
+    [17] = {[6] = 2.0, [9] = 2.0, [15] = 2.0, [2] = 0.5, [3] = 0.5, [5] = 0.5, [17] = 0.5} -- Steel counters Ice, Rock, Light
+}
+
+local function GetElementMultiplier(attackerElem, defenderElem)
+    if not attackerElem or not defenderElem then return 1.0 end
+    local mult = nil
+    pcall(function()
+        local etc = ElementTypeConfig or require(ReplicatedStorage.Config.ElementTypeConfig)
+        if etc and etc[attackerElem] and etc[attackerElem].counter then
+            local val = etc[attackerElem].counter[defenderElem]
+            if val then mult = val / 10000 end
+        end
+    end)
+    if mult then return mult end
+    if TypeCounters[attackerElem] and TypeCounters[attackerElem][defenderElem] ~= nil then
+        return TypeCounters[attackerElem][defenderElem]
+    end
+    return 1.0
+end
+
+local function GetBestCounterElements(defenderElem)
+    local counters = {}
+    for elemId = 1, 17 do
+        local m = GetElementMultiplier(elemId, defenderElem)
+        if m >= 2.0 then
+            table.insert(counters, elemId)
+        end
+    end
+    return counters
+end
+
+local function GetCurrentEnemyInfo()
+    local enemyInfo = {
+        name = "Unknown Opponent",
+        element = 1,
+        level = 1,
+        hp = 100,
+        maxHp = 100
+    }
+    pcall(function()
+        if BattleService and BattleService.getCurrentBattle then
+            local cur = BattleService.getCurrentBattle()
+            if cur and cur.camp2 and cur.camp2.slots and cur.camp2.slots[1] then
+                local slot = cur.camp2.slots[1]
+                local cfgId = slot.cfgId or slot.configId or slot.cid or slot.petId
+                local petCfg = cfgId and PetConfig and PetConfig[cfgId]
+                enemyInfo.name = (petCfg and petCfg.name) or slot.name or slot.petName or ("Opponent_" .. tostring(cfgId or ""))
+                enemyInfo.level = tonumber(slot.level) or 1
+                enemyInfo.hp = tonumber(slot.hp) or 100
+                enemyInfo.maxHp = tonumber(slot.maxHp) or 100
+                if petCfg and petCfg.elements and petCfg.elements[1] then
+                    enemyInfo.element = petCfg.elements[1]
+                elseif slot.element or slot.mainElement then
+                    enemyInfo.element = slot.element or slot.mainElement
+                end
+            end
+        end
+    end)
+    return enemyInfo
+end
+
+-- Evaluates all player pets and finds the best counter Evomon against target element
+local function SelectBestCounterPetForEnemy(enemyElement)
+    if not enemyElement then return nil end
+    local bestPet = nil
+    local bestScore = -1
+
+    pcall(function()
+        local ps = require(ReplicatedStorage.Script.Pet.PetService)
+        local code, petData = ps.getPlayerPetData()
+        local petList = (type(petData) == "table" and petData.petList) or {}
+
+        for uid, pet in pairs(petList) do
+            local cfgId = pet.configId or pet.petId or pet.id
+            local petCfg = cfgId and PetConfig and PetConfig[cfgId]
+            local elem = (petCfg and petCfg.elements and petCfg.elements[1]) or 1
+            local mult = GetElementMultiplier(elem, enemyElement)
+            local lvl = tonumber(pet.level) or 1
+            local score = (mult * 1000) + lvl
+            if score > bestScore then
+                bestScore = score
+                bestPet = {
+                    uid = uid,
+                    configId = cfgId,
+                    name = (petCfg and petCfg.name) or "Pet",
+                    element = elem,
+                    level = lvl,
+                    multiplier = mult
+                }
+            end
+        end
+    end)
+
+    return bestPet
+end
+
+-- Automatically equips the best counter Evomon before battle
+local function AlignPetCounter(enemyElement)
+    if not HubState.SmartCombatAI or not HubState.AutoSwitchPetCounter then return end
+    if not enemyElement then return end
+    pcall(function()
+        local ps = require(ReplicatedStorage.Script.Pet.PetService)
+        local curMainUid = ps.getMainPetUid and tostring(ps.getMainPetUid())
+        local best = SelectBestCounterPetForEnemy(enemyElement)
+        if best and best.uid and tostring(best.uid) ~= curMainUid and best.multiplier >= 1.5 then
+            ps.reqSetMainPet(best.uid)
+            WindUI:Notify({
+                Title = "Smart Pet Counter 🔥",
+                Content = string.format("Selected %s (%s) vs %s opponent!", best.name, ElementNames[best.element] or "", ElementNames[enemyElement] or ""),
+                Duration = 2.5,
+                Icon = "shield"
+            })
+        end
+    end)
+end
+
+-- Executes intelligent move selection during combat
+local function ExecuteSmartCombatStep()
+    local inBattle, battleWin = IsInBattle()
+    if not inBattle or not battleWin then return end
+
+    local enemy = GetCurrentEnemyInfo()
+    HubState.CurrentEnemyElement = enemy.element
+    HubState.CurrentEnemyName = enemy.name
+
+    -- 1. Auto Ultimate Burst when charged & ready
+    if HubState.AutoCastUltimate and battleWin.UltimateSkillPromptImg and battleWin.UltimateSkillPromptImg.Visible then
+        pcall(function()
+            if not battleWin._ultimateIsLocked then
+                for _, c in ipairs(getconnections(battleWin.UltimateSkillPromptImg.MouseButton1Click)) do c:Fire() end
+                for _, c in ipairs(getconnections(battleWin.UltimateSkillPromptImg.Activated)) do c:Fire() end
+            end
+        end)
+    end
+
+    -- 2. Smart Move Selection (Highest Damage / Super-Effective 2.0x move)
+    if HubState.AutoPickBestMove then
+        pcall(function()
+            local ps = require(ReplicatedStorage.Script.Pet.PetService)
+            local mainPetUid = ps.getMainPetUid and ps.getMainPetUid()
+            local _, petData = pcall(function() return ps.getPetDataByUid and ps.getPetDataByUid(mainPetUid) end)
+
+            -- Find all skill buttons inside battleWin
+            local skillButtons = {}
+            for _, desc in ipairs(battleWin.instance:GetDescendants()) do
+                if desc:IsA("GuiButton") and desc.Visible and desc.Parent and (string.find(desc.Name:lower(), "skill") or string.find(desc.Parent.Name:lower(), "skill")) then
+                    table.insert(skillButtons, desc)
+                end
+            end
+
+            local skillList = battleWin._skillButtonList or battleWin.SkillButtonList or skillButtons
+            if #skillList > 0 then
+                local bestBtn = skillList[1]
+                local bestScore = -1
+
+                for idx, btn in ipairs(skillList) do
+                    local sId = btn:GetAttribute("SkillId") or (petData and petData.skills and petData.skills[idx] and petData.skills[idx].id)
+                    local sCfg = sId and SkillConfig and SkillConfig[sId]
+                    local sElem = (sCfg and sCfg.element) or 1
+                    local sPower = (sCfg and sCfg.power) or 50
+                    local mult = GetElementMultiplier(sElem, enemy.element)
+                    local score = sPower * mult
+
+                    if score > bestScore then
+                        bestScore = score
+                        bestBtn = btn
+                    end
+                end
+
+                if bestBtn then
+                    for _, c in ipairs(getconnections(bestBtn.MouseButton1Click)) do c:Fire() end
+                    for _, c in ipairs(getconnections(bestBtn.Activated)) do c:Fire() end
+                end
+            end
+        end)
+    end
+end
+
 -- Trigger Level Breakthrough (breaks Evomon & Player level caps)
 local function TriggerLevelBreakthrough()
     local lvRemote = Remote:FindFirstChild("Lv") and Remote.Lv:FindFirstChild("ReqLevelBreakthrough")
