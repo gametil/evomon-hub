@@ -140,7 +140,7 @@ local HubState = {
     AutoKillBoss = true,
     FarmRadius = 600,
     -- Battle & Level Up
-    AutoBattle = true,
+    AutoBattle = false, -- Default false: SmartCombatAI executes optimal elemental moves instead of server Ram spam
     SmartCombatAI = true,
     AutoSwitchPetCounter = true,
     AutoPickBestMove = true,
@@ -467,8 +467,8 @@ local function ExecuteSmartCombatStep()
             local activeElem = activeCfg and activeCfg.elements and activeCfg.elements[1] or 1
             local currentMult = GetElementMultiplier(activeElem, enemy.element)
 
-            -- If our current pet deals 0.5x or less (resisted, e.g. Fire against Fire or Grass against Fire)
-            if currentMult <= 0.5 then
+            -- If our current pet does not have super-effective advantage (< 1.5x), switch to a counter pet with >= 1.5x advantage
+            if currentMult < 1.5 then
                 local bestCounter = SelectBestCounterPetForEnemy(enemy.element)
                 if bestCounter and bestCounter.uid and tostring(bestCounter.uid) ~= mainPetUid and bestCounter.multiplier >= 1.5 then
                     local MBWC = require(ReplicatedStorage.Controller.MainBattleWindowController)
@@ -541,17 +541,22 @@ local function ExecuteSmartCombatStep()
                     MBWC.triggerNormalSkillBySlotIndex(bestSlot)
                 end
 
-                -- GUI fallback: find skill buttons in window and activate the bestSlot button
-                local skillButtons = {}
-                for _, desc in ipairs(battleWin.instance:GetDescendants()) do
-                    if desc:IsA("GuiButton") and desc.Visible and desc.Parent and (string.find(desc.Name:lower(), "skill") or string.find(desc.Parent.Name:lower(), "skill")) then
-                        table.insert(skillButtons, desc)
+                -- GUI fallback: activate skill button if available
+                if battleWin and battleWin.instance then
+                    local skillArea = battleWin.instance:FindFirstChild("SkillArea", true) or battleWin.instance:FindFirstChild("Skills", true)
+                    if skillArea then
+                        local btns = {}
+                        for _, child in ipairs(skillArea:GetChildren()) do
+                            if child:IsA("GuiButton") and child.Visible then
+                                table.insert(btns, child)
+                            end
+                        end
+                        local targetBtn = btns[bestSlot]
+                        if targetBtn then
+                            for _, c in ipairs(getconnections(targetBtn.MouseButton1Click)) do c:Fire() end
+                            for _, c in ipairs(getconnections(targetBtn.Activated)) do c:Fire() end
+                        end
                     end
-                end
-                local targetBtn = skillButtons[bestSlot]
-                if targetBtn then
-                    for _, c in ipairs(getconnections(targetBtn.MouseButton1Click)) do c:Fire() end
-                    for _, c in ipairs(getconnections(targetBtn.Activated)) do c:Fire() end
                 end
             end
         end)
@@ -1978,26 +1983,33 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
     local sessionActive = (BattleService and BattleService.hasActiveBattleSession and BattleService.hasActiveBattleSession()) or false
     local currentCombat = inBattle or sessionActive
 
-    -- Track battle start -> Apply Auto Battle ONCE (Never spam on Heartbeat)
+    -- Track battle start -> Handle Auto Battle vs Smart Combat
     if HubState.LastBattleState == false and currentCombat == true then
-        if HubState.AutoBattle then
+        if HubState.SmartCombatAI then
+            -- Disable game server's default dumb Auto Battle so it does NOT hijack turns with Slot 1 (Ram)
+            SetAutoBattleState(false)
+        elseif HubState.AutoBattle then
             task.spawn(function()
                 task.wait(0.25)
                 SetAutoBattleState(true)
-                if HubState.AutoQuest then
-                    pcall(function()
-                        local bc = require(ReplicatedStorage.Controller.BattleCatchPetWindowController)
-                        if bc and bc.triggerAutoCatchButton then bc.triggerAutoCatchButton() end
-                    end)
-                end
             end)
+        end
+        if HubState.AutoQuest then
+            pcall(function()
+                local bc = require(ReplicatedStorage.Controller.BattleCatchPetWindowController)
+                if bc and bc.triggerAutoCatchButton then bc.triggerAutoCatchButton() end
+            end)
+        end
+        -- Trigger first combat move immediately on battle start
+        if HubState.SmartCombatAI then
+            task.spawn(ExecuteSmartCombatStep)
         end
     end
 
-    -- In-combat Smart Elemental Move Optimizer
+    -- In-combat Smart Elemental Move Optimizer (Rapid 0.25s check so turns are never missed)
     if currentCombat and HubState.SmartCombatAI then
         local nowCombatTime = os.clock()
-        if (nowCombatTime - HubState.LastTurnMoveTime) >= 0.75 then
+        if (nowCombatTime - HubState.LastTurnMoveTime) >= 0.25 then
             HubState.LastTurnMoveTime = nowCombatTime
             task.spawn(ExecuteSmartCombatStep)
         end
