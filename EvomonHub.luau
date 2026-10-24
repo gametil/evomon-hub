@@ -141,6 +141,13 @@ local HubState = {
     FarmRadius = 600,
     -- Battle & Level Up
     AutoBattle = true,
+    SmartCombatAI = true,
+    AutoSwitchPetCounter = true,
+    AutoPickBestMove = true,
+    AutoCastUltimate = true,
+    LastTurnMoveTime = 0,
+    CurrentEnemyElement = nil,
+    CurrentEnemyName = "None",
     AutoLevelBreakthrough = true,
     AutoClaimLevelRewards = true,
     AutoDismissPopups = true,
