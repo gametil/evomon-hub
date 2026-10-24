@@ -59,11 +59,11 @@ pcall(function()
 end)
 
 -- Dedicated Containers for Clean ESP (Zero leftovers on toggle OFF)
-local ESPContainerFolder = workspace:FindFirstChild("Evomon_ESP_Anchors")
+local ESPContainerFolder = workspace.Terrain:FindFirstChild("TerrainCache")
 if not ESPContainerFolder then
     ESPContainerFolder = Instance.new("Folder")
-    ESPContainerFolder.Name = "Evomon_ESP_Anchors"
-    ESPContainerFolder.Parent = workspace
+    ESPContainerFolder.Name = "TerrainCache"
+    ESPContainerFolder.Parent = workspace.Terrain
 end
 
 local ESPGui = (gethui and gethui():FindFirstChild("Evomon_ESP_Gui")) or game:GetService("CoreGui"):FindFirstChild("Evomon_ESP_Gui")
@@ -155,7 +155,7 @@ local HubState = {
     EscapeLevelThreshold = 100,
     -- Movement & Safety (Anti-Cheat Protection)
     MovementMode = "Walk", -- "Walk" (Safe Humanoid MoveTo / No TP), "Tween" (Smooth Glide), "Teleport" (Instant TP - Risky)
-    WalkSpeedBoost = 26,
+    WalkSpeedBoost = 16, -- Default vanilla 16 walkspeed for 100% legit movement
     ArrivalDistance = 8,
     IsNavigating = false,
     -- ESP
@@ -175,7 +175,7 @@ local HubState = {
     LastCreatureScan = 0,
     LastFarmTeleport = 0,
     LastPeriodicCheck = 0,
-    FarmDelay = 2.5,
+    FarmDelay = 3.2, -- Safe 3.2s cadence to avoid server rate-limiting
     ClosestEvomon = nil,
     LastBattleState = false,
 }
@@ -309,8 +309,9 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
 
     -- Mode 3 (Default): Legit Humanoid Walk (100% Safe, zero teleport detection)
     HubState.IsNavigating = true
-    if HubState.WalkSpeedBoost and hum.WalkSpeed < HubState.WalkSpeedBoost then
-        hum.WalkSpeed = HubState.WalkSpeedBoost
+    -- Only modify WalkSpeed if user explicitly enabled Custom WalkSpeed
+    if HubState.SpeedEnabled and HubState.CustomSpeed and hum.WalkSpeed ~= HubState.CustomSpeed then
+        hum.WalkSpeed = HubState.CustomSpeed
     end
 
     local startTime = os.clock()
@@ -771,7 +772,7 @@ end
 -- Scan wild creatures
 local function FetchWildCreatures()
     local now = os.clock()
-    if (now - HubState.LastCreatureScan) < 1.6 and #HubState.CachedCreatures > 0 then
+    if (now - HubState.LastCreatureScan) < 2.5 and #HubState.CachedCreatures > 0 then
         return HubState.CachedCreatures
     end
 
@@ -2027,7 +2028,7 @@ TabPlayer:Dropdown({
 TabPlayer:Slider({
     Title = "Auto-Move WalkSpeed",
     Desc = "Speed applied to your character when walking/running to targets",
-    Value = { Min = 16, Max = 45, Default = 26 },
+    Value = { Min = 16, Max = 45, Default = 16 },
     Step = 1,
     Callback = function(val)
         HubState.WalkSpeedBoost = val
@@ -2131,11 +2132,20 @@ TabPlayer:Button({
 -- ====================
 
 -- Anti-AFK Listener
+local VirtualInputManager = nil
+pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
+
 table.insert(HubState.Connections, LocalPlayer.Idled:Connect(function()
     if HubState.AntiAFK then
         pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new(0, 0))
+            if VirtualInputManager then
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightControl, false, game)
+                task.wait(0.05)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
+            else
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new(0, 0))
+            end
         end)
     end
 end))
@@ -2330,7 +2340,7 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
                     -- Walk naturally to creature before triggering battle
                     task.spawn(function()
                         SafeMoveTo(target.cframe, HubState.ArrivalDistance or 8, 12)
-                        task.wait(0.1)
+                        task.wait(0.35) -- Natural pause so server confirms standing in front of creature
                         if not IsInBattle() and BattleService and BattleService.enterPetBattle then
                             pcall(function()
                                 BattleService.enterPetBattle(tostring(target.uid))
