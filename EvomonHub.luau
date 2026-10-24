@@ -122,7 +122,7 @@ local HubState = {
     -- Auto Quest System
     AutoQuest = false,
     AutoQuestClaim = true,
-    QuestStepDelay = 3.0,
+    QuestStepDelay = 1.8,
     LastQuestStep = 0,
     -- Island Progression Auto Farm
     IslandAutoFarm = false,
@@ -449,16 +449,25 @@ local function ExecuteQuestStep()
 
     local gType = quest.goal and quest.goal.type
     local gParams = quest.goal and quest.goal.params
+    local allCreatures = FetchWildCreatures()
 
-    -- Step 2: Goal Type 4 or 5: Catch / Defeat specific Evomon
+    -- Goal Type 4 or 5: Catch / Defeat specific Evomon
     if gType == 4 or gType == 5 then
         local targetCfgId = gParams and gParams[1]
-        local creatures = FetchWildCreatures()
         local targetCreature = nil
 
         if targetCfgId then
-            for _, c in ipairs(creatures) do
+            for _, c in ipairs(allCreatures) do
                 if c.cfgId == targetCfgId then
+                    targetCreature = c
+                    break
+                end
+            end
+        end
+
+        if not targetCreature then
+            for _, c in ipairs(allCreatures) do
+                if string.find(quest.name:lower(), c.name:lower()) then
                     targetCreature = c
                     break
                 end
@@ -476,7 +485,7 @@ local function ExecuteQuestStep()
             end)
             return
         else
-            -- If creature is not currently nearby, check which island the quest mentions and warp there
+            -- If creature is not currently nearby, warp to the island mentioned in quest title
             for _, isl in ipairs(IslandData) do
                 local islandCleanName = isl.name:match("%((.+)%)") or isl.name
                 if string.find(quest.name:lower(), islandCleanName:lower()) then
@@ -484,6 +493,72 @@ local function ExecuteQuestStep()
                     return
                 end
             end
+        end
+
+    -- Goal Type 40 or 8: Level up Evomon / Reach Level (e.g. Own a Lv.55 Evomon)
+    elseif gType == 40 or gType == 8 then
+        local targetLevel = (gParams and gParams[1]) or 55
+        TriggerLevelBreakthrough()
+
+        -- Try feeding any available EXP fruits from inventory
+        local fed = false
+        pcall(function()
+            local ps = require(ReplicatedStorage.Script.Pet.PetService)
+            local BagService = require(ReplicatedStorage.Script.Bag.BagService)
+            local mainPet = ps.getMainPetUid()
+            local fruitIds = {4000039, 4000023, 4000022, 4000021}
+            for _, fId in ipairs(fruitIds) do
+                local count = BagService.getItemNumById and BagService.getItemNumById(fId)
+                if count and count > 0 then
+                    local r = ps.reqPetAddExpByItems(mainPet, {{id = fId, num = 1}})
+                    if r == 20000 then
+                        fed = true
+                        break
+                    end
+                end
+            end
+        end)
+
+        -- Check if quest completed from feeding
+        local qAfterFeed = GetCurrentQuestInfo()
+        if qAfterFeed and (qAfterFeed.isClaimable or qAfterFeed.isCompleted) then
+            pcall(function()
+                Remote.Task.ReqCompleteTask:InvokeServer(qAfterFeed.taskId)
+            end)
+            DismissBlockingWindows()
+            return
+        end
+
+        -- ACTIVELY GO FIGHT WILD EVOMONS TO GRIND EXP & CATCH HIGH-LEVEL EVOMON!
+        local bestTarget = nil
+        -- 1. Prioritize wild Evomons whose level >= targetLevel (catching one satisfies the quest instantly!)
+        for _, c in ipairs(allCreatures) do
+            if c.level >= targetLevel and c.distance < 1200 then
+                bestTarget = c
+                break
+            end
+        end
+        -- 2. Otherwise find wild Evomon near level 45-60 to gain massive EXP
+        if not bestTarget and #allCreatures > 0 then
+            for _, c in ipairs(allCreatures) do
+                if c.level >= 45 and c.level <= 65 then
+                    bestTarget = c
+                    break
+                end
+            end
+            if not bestTarget then bestTarget = allCreatures[1] end
+        end
+
+        if bestTarget then
+            TeleportTo(bestTarget.cframe)
+            task.delay(0.2, function()
+                if not IsInBattle() and BattleService and BattleService.enterPetBattle then
+                    pcall(function()
+                        BattleService.enterPetBattle(tostring(bestTarget.uid))
+                    end)
+                end
+            end)
+            return
         end
 
     -- Goal Type 10: Dialogue / Talk to NPC
@@ -542,20 +617,23 @@ local function ExecuteQuestStep()
     elseif gType == 42 then
         TriggerLevelBreakthrough()
         return
-
-    -- Goal Type 40 or 8: Level up Evomon / Reach Level
-    elseif gType == 40 or gType == 8 then
-        TriggerLevelBreakthrough()
-        pcall(function()
-            local ps = require(ReplicatedStorage.Script.Pet.PetService)
-            local mainPet = ps.getMainPetUid()
-            if mainPet then
-                ps.reqPetAddExpByItems(mainPet, {{id = 4000022, num = 3}})
-            end
-        end)
     end
 
-    -- Step 3: Trigger in-game Quest Guide button (MainWindow.QuestButton)
+    -- Fallback: Engage closest wild Evomon in current area to keep progressing
+    if #allCreatures > 0 then
+        local target = allCreatures[1]
+        TeleportTo(target.cframe)
+        task.delay(0.2, function()
+            if not IsInBattle() and BattleService and BattleService.enterPetBattle then
+                pcall(function()
+                    BattleService.enterPetBattle(tostring(target.uid))
+                end)
+            end
+        end)
+        return
+    end
+
+    -- In-game Quest Guide button fallback
     pcall(function()
         local open = UIManager:getOpenedUIWindowList()
         for _, w in ipairs(open or {}) do
@@ -1368,6 +1446,12 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
             task.spawn(function()
                 task.wait(0.25)
                 SetAutoBattleState(true)
+                if HubState.AutoQuest then
+                    pcall(function()
+                        local bc = require(ReplicatedStorage.Controller.BattleCatchPetWindowController)
+                        if bc and bc.triggerAutoCatchButton then bc.triggerAutoCatchButton() end
+                    end)
+                end
             end)
         end
     end
@@ -1395,13 +1479,17 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
             if HubState.AutoClaimLevelRewards then
                 TriggerClaimLevelRewards()
             end
-            -- Auto-claim quest if it was completed during battle
+            -- Auto-claim quest if it was completed during battle & immediately run next step
             if HubState.AutoQuest or HubState.AutoQuestClaim then
                 local q = GetCurrentQuestInfo()
                 if q and (q.isClaimable or q.isCompleted) then
                     pcall(function()
                         Remote.Task.ReqCompleteTask:InvokeServer(q.taskId)
                     end)
+                    DismissBlockingWindows()
+                end
+                if HubState.AutoQuest then
+                    task.delay(0.5, ExecuteQuestStep)
                 end
             end
         end)
