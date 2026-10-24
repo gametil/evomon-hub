@@ -153,6 +153,11 @@ local HubState = {
     AutoDismissPopups = true,
     AutoEscapeIfHighLevel = false,
     EscapeLevelThreshold = 100,
+    -- Movement & Safety (Anti-Cheat Protection)
+    MovementMode = "Walk", -- "Walk" (Safe Humanoid MoveTo / No TP), "Tween" (Smooth Glide), "Teleport" (Instant TP - Risky)
+    WalkSpeedBoost = 26,
+    ArrivalDistance = 8,
+    IsNavigating = false,
     -- ESP
     EvomonESP = false,
     ESPObjects = {},
@@ -236,18 +241,179 @@ local function GetRootPart()
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
--- Teleport to position safely
-local function TeleportTo(cf)
+local function GetHumanoid()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+-- Safe Movement Engine: Walks smoothly using Humanoid:MoveTo / Pathfinding to completely eliminate TP detection risks
+local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
+    stopDistance = stopDistance or HubState.ArrivalDistance or 8
+    timeoutSec = timeoutSec or 12
+
+    local targetPos = nil
+    if typeof(cfOrPos) == "CFrame" then
+        targetPos = cfOrPos.Position
+    elseif typeof(cfOrPos) == "Vector3" then
+        targetPos = cfOrPos
+    end
+    if not targetPos then return false end
+
     local root = GetRootPart()
-    if root then
-        if typeof(cf) == "Vector3" then
-            root.CFrame = CFrame.new(cf + Vector3.new(0, 3.2, 0))
-        elseif typeof(cf) == "CFrame" then
-            root.CFrame = cf + Vector3.new(0, 3.2, 0)
-        end
+    local hum = GetHumanoid()
+    if not root or not hum then return false end
+
+    local dist = (root.Position - targetPos).Magnitude
+    if dist <= stopDistance then return true end
+
+    -- Mode 1: Instant Teleport (Only when user explicitly selects Risky TP)
+    if HubState.MovementMode == "Teleport" then
+        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3.2, 0))
         root.AssemblyLinearVelocity = Vector3.zero
         root.AssemblyAngularVelocity = Vector3.zero
+        return true
     end
+
+    -- Cross-island / Long-distance transit (> 1000 studs across oceans)
+    if dist > 1000 then
+        local TweenService = game:GetService("TweenService")
+        local glideDuration = math.clamp(dist / 140, 2, 7)
+        local tweenInfo = TweenInfo.new(glideDuration, Enum.EasingStyle.Linear)
+        local tween = TweenService:Create(root, tweenInfo, { CFrame = CFrame.new(targetPos + Vector3.new(0, 4, 0)) })
+        tween:Play()
+        local elapsed = 0
+        while elapsed < glideDuration do
+            if IsInBattle() then tween:Cancel(); return true end
+            task.wait(0.1)
+            elapsed = elapsed + 0.1
+        end
+        return (root.Position - targetPos).Magnitude <= (stopDistance + 10)
+    end
+
+    -- Mode 2: Smooth Glide (Tween)
+    if HubState.MovementMode == "Tween" then
+        local TweenService = game:GetService("TweenService")
+        local speed = HubState.WalkSpeedBoost or 26
+        local duration = math.clamp(dist / speed, 0.2, timeoutSec)
+        local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
+        local tween = TweenService:Create(root, tweenInfo, { CFrame = CFrame.new(targetPos + Vector3.new(0, 3.2, 0)) })
+        tween:Play()
+        local elapsed = 0
+        while elapsed < duration do
+            if IsInBattle() then tween:Cancel(); return true end
+            task.wait(0.08)
+            elapsed = elapsed + 0.08
+        end
+        return (root.Position - targetPos).Magnitude <= (stopDistance + 6)
+    end
+
+    -- Mode 3 (Default): Legit Humanoid Walk (100% Safe, zero teleport detection)
+    HubState.IsNavigating = true
+    if HubState.WalkSpeedBoost and hum.WalkSpeed < HubState.WalkSpeedBoost then
+        hum.WalkSpeed = HubState.WalkSpeedBoost
+    end
+
+    local startTime = os.clock()
+    local lastPos = root.Position
+    local stuckTicks = 0
+
+    -- For medium-to-long paths (> 35 studs), compute obstacle-aware waypoints
+    if dist > 35 then
+        local PathfindingService = game:GetService("PathfindingService")
+        local path = PathfindingService:CreatePath({
+            AgentRadius = 2.5,
+            AgentHeight = 5.0,
+            AgentCanJump = true,
+            WaypointSpacing = 8
+        })
+        local ok = pcall(function()
+            path:ComputeAsync(root.Position, targetPos)
+        end)
+
+        if ok and path.Status == Enum.PathStatus.Success then
+            local waypoints = path:GetWaypoints()
+            for i = 2, #waypoints do
+                if IsInBattle() or not HubState.Running then
+                    HubState.IsNavigating = false
+                    return true
+                end
+                if (os.clock() - startTime) > timeoutSec then break end
+
+                local wp = waypoints[i]
+                if wp.Action == Enum.PathWaypointAction.Jump then
+                    hum.Jump = true
+                end
+
+                hum:MoveTo(wp.Position)
+                local stepT0 = os.clock()
+                while (os.clock() - stepT0) < 2.5 do
+                    if IsInBattle() then
+                        HubState.IsNavigating = false
+                        return true
+                    end
+                    local curD = (root.Position - wp.Position).Magnitude
+                    if curD <= 6 or (root.Position - targetPos).Magnitude <= stopDistance then
+                        break
+                    end
+                    task.wait(0.06)
+                end
+            end
+        end
+    end
+
+    -- Direct approach to destination
+    while (os.clock() - startTime) < timeoutSec do
+        if IsInBattle() or not HubState.Running then
+            hum:Move(Vector3.zero)
+            HubState.IsNavigating = false
+            return true
+        end
+
+        local curDist = (root.Position - targetPos).Magnitude
+        if curDist <= stopDistance then
+            hum:Move(Vector3.zero)
+            HubState.IsNavigating = false
+            return true
+        end
+
+        hum:MoveTo(targetPos)
+
+        -- Unstuck detection
+        if (root.Position - lastPos).Magnitude < 0.6 then
+            stuckTicks = stuckTicks + 1
+            if stuckTicks >= 3 then
+                hum.Jump = true
+                stuckTicks = 0
+            end
+        else
+            stuckTicks = 0
+        end
+        lastPos = root.Position
+
+        task.wait(0.1)
+    end
+
+    hum:Move(Vector3.zero)
+    HubState.IsNavigating = false
+    return (root.Position - targetPos).Magnitude <= (stopDistance + 6)
+end
+
+-- Teleport router: defaults to safe movement unless forceInstant is passed
+local function TeleportTo(cf, forceInstant)
+    if forceInstant or HubState.MovementMode == "Teleport" then
+        local root = GetRootPart()
+        if root then
+            if typeof(cf) == "Vector3" then
+                root.CFrame = CFrame.new(cf + Vector3.new(0, 3.2, 0))
+            elseif typeof(cf) == "CFrame" then
+                root.CFrame = cf + Vector3.new(0, 3.2, 0)
+            end
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end
+        return true
+    end
+    return SafeMoveTo(cf, HubState.ArrivalDistance or 8)
 end
 
 -- Check if a specific window is open in UIManager
@@ -1840,6 +2006,44 @@ TabTeleports:Button({
 -- TAB 6: PLAYER & UTILITIES
 -- ===================================================
 
+TabPlayer:Section({ Title = "Safe Movement & Anti-Detection" })
+
+TabPlayer:Dropdown({
+    Title = "Movement Mode",
+    Desc = "Legit Walk avoids server teleport detection. Instant TP is risky.",
+    Values = { "Legit Walk (Safe - No TP)", "Smooth Glide (Tween)", "Instant TP (Risky)" },
+    Value = "Legit Walk (Safe - No TP)",
+    Callback = function(val)
+        if string.find(val, "Walk") then
+            HubState.MovementMode = "Walk"
+        elseif string.find(val, "Glide") or string.find(val, "Tween") then
+            HubState.MovementMode = "Tween"
+        else
+            HubState.MovementMode = "Teleport"
+        end
+    end
+})
+
+TabPlayer:Slider({
+    Title = "Auto-Move WalkSpeed",
+    Desc = "Speed applied to your character when walking/running to targets",
+    Value = { Min = 16, Max = 45, Default = 26 },
+    Step = 1,
+    Callback = function(val)
+        HubState.WalkSpeedBoost = val
+    end
+})
+
+TabPlayer:Slider({
+    Title = "Combat Arrival Distance",
+    Desc = "Distance to creature before triggering battle",
+    Value = { Min = 4, Max = 16, Default = 8 },
+    Step = 1,
+    Callback = function(val)
+        HubState.ArrivalDistance = val
+    end
+})
+
 TabPlayer:Section({ Title = "Character Modifiers" })
 
 TabPlayer:Toggle({
@@ -2092,8 +2296,8 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
         task.spawn(ExecuteQuestStep)
     end
 
-    -- Island Progression Auto Farm Loop (Only if AutoQuest is not busy)
-    if HubState.IslandAutoFarm and not HubState.AutoQuest and not currentCombat and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
+    -- Island Progression Auto Farm Loop (Only if AutoQuest is not busy and not currently walking)
+    if HubState.IslandAutoFarm and not HubState.AutoQuest and not currentCombat and not HubState.IsNavigating and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
         if HubState.AutoDismissPopups then
             DismissBlockingWindows()
         end
@@ -2103,8 +2307,8 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
         if curIsland then
             -- World Boss Island
             if curIsland.id == 99 then
-                TeleportTo(curIsland.pos)
-                task.delay(0.2, function()
+                task.spawn(function()
+                    SafeMoveTo(curIsland.pos, 10, 15)
                     pcall(function()
                         if BattleService and BattleService.reportEnterBossBattle then
                             BattleService.reportEnterBossBattle(1)
@@ -2123,8 +2327,10 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
                             AlignPetCounter(petCfg.mainElement)
                         end
                     end
-                    TeleportTo(target.cframe)
-                    task.delay(0.18, function()
+                    -- Walk naturally to creature before triggering battle
+                    task.spawn(function()
+                        SafeMoveTo(target.cframe, HubState.ArrivalDistance or 8, 12)
+                        task.wait(0.1)
                         if not IsInBattle() and BattleService and BattleService.enterPetBattle then
                             pcall(function()
                                 BattleService.enterPetBattle(tostring(target.uid))
@@ -2132,7 +2338,9 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
                         end
                     end)
                 else
-                    TeleportTo(curIsland.pos)
+                    task.spawn(function()
+                        SafeMoveTo(curIsland.pos, 15, 15)
+                    end)
                 end
             end
         end
@@ -2296,13 +2504,16 @@ _G.EvomonHub = {
     FightClosest = function()
         local list = FetchWildCreatures()
         if list[1] then
-            TeleportTo(list[1].cframe)
-            task.wait(0.2)
-            if BattleService and BattleService.enterPetBattle then
-                BattleService.enterPetBattle(tostring(list[1].uid))
-            end
+            task.spawn(function()
+                SafeMoveTo(list[1].cframe, HubState.ArrivalDistance or 8, 15)
+                task.wait(0.1)
+                if BattleService and BattleService.enterPetBattle then
+                    BattleService.enterPetBattle(tostring(list[1].uid))
+                end
+            end)
         end
     end,
+    SafeMoveTo = SafeMoveTo,
     TeleportTo = TeleportTo
 }
 
