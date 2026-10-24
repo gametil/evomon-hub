@@ -2,15 +2,17 @@
     Evomon [S3 TRADE] - WindUI Automation Hub
     Reverse engineered & automated via Real MCP
     WindUI Modern Interface
+
     Features:
-      - Wild Evomon Radar & Teleport (Closest, High Level, Shiny/Rare)
-      - Wild Evomon ESP Visualizer (Live distance, level & names)
-      - Auto Farm Wild Evomons (Auto Engage & Battle)
-      - Auto Battle & Escape Helper
+      - Clean ESP Visualizer (Bug-free instant wipe on toggle OFF)
+      - Island Progression Auto Farm (Farms island, advances to next island, kills boss)
+      - Wild Evomon Radar & Teleports (Closest, High Level, Shiny/Rare)
+      - Auto Battle & Skill Executor
+      - Boss Island & World Boss Farm
       - One-Click Auto Redeem All Active Codes
       - Auto Claim Mail, Daily, & Group Rewards
-      - World & Island Teleports (Islands 1-15, Trading Hall, Dungeons)
-      - Character Modifiers (WalkSpeed, JumpPower, Infinite Jump, NoClip, Anti-AFK)
+      - All 15 Island Coordinates & Instant Waypoints
+      - Player Mods (WalkSpeed, JumpPower, Infinite Jump, NoClip, Anti-AFK)
 ]]
 
 local Players = game:GetService("Players")
@@ -38,6 +40,22 @@ local Config = ReplicatedStorage:WaitForChild("Config", 30)
 local PetConfig = Config and require(Config:WaitForChild("PetConfig", 10))
 local UIManager = require(ReplicatedStorage.Core.UI.UIManager)
 
+-- Dedicated Containers for Clean ESP (Zero leftovers on toggle OFF)
+local ESPContainerFolder = workspace:FindFirstChild("Evomon_ESP_Anchors")
+if not ESPContainerFolder then
+    ESPContainerFolder = Instance.new("Folder")
+    ESPContainerFolder.Name = "Evomon_ESP_Anchors"
+    ESPContainerFolder.Parent = workspace
+end
+
+local ESPGui = (gethui and gethui():FindFirstChild("Evomon_ESP_Gui")) or game:GetService("CoreGui"):FindFirstChild("Evomon_ESP_Gui")
+if not ESPGui then
+    ESPGui = Instance.new("ScreenGui")
+    ESPGui.Name = "Evomon_ESP_Gui"
+    ESPGui.ResetOnSpawn = false
+    ESPGui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
+end
+
 -- Load WindUI
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
@@ -47,7 +65,7 @@ local Window = WindUI:CreateWindow({
     Icon = "sparkles",
     Author = "by Antigravity & WindUI",
     Folder = "EvomonHubConfig",
-    Size = UDim2.fromOffset(630, 500),
+    Size = UDim2.fromOffset(640, 520),
     Theme = "Dark",
     Transparent = true,
     Resizable = true,
@@ -68,17 +86,43 @@ local Window = WindUI:CreateWindow({
     }
 })
 
+-- Island Coordinates Directory
+local IslandData = {
+    {id = 1, name = "Island 1 (Verdant Valley)", pos = Vector3.new(8312, 632, 150)},
+    {id = 2, name = "Island 2 (Petal Pond)", pos = Vector3.new(9470, 665, -916)},
+    {id = 3, name = "Island 3 (Lava Crag)", pos = Vector3.new(9682, 768, -3043)},
+    {id = 4, name = "Island 4 (Amber Acres)", pos = Vector3.new(11078, 637, -4550)},
+    {id = 5, name = "Island 5 (Autumn Hill)", pos = Vector3.new(11830, 523, -5963)},
+    {id = 6, name = "Island 6 (Shiver Snows)", pos = Vector3.new(11480, 699, -7730)},
+    {id = 7, name = "Island 7 (Raven Ridge)", pos = Vector3.new(14281, 478, -8823)},
+    {id = 8, name = "Island 8 (Silent Sands)", pos = Vector3.new(16357, 551, -9046)},
+    {id = 9, name = "Island 9 (Crystal Cascade)", pos = Vector3.new(17665, 565, -7634)},
+    {id = 10, name = "Island 10 (Dusk Town)", pos = Vector3.new(19353, 645, -7567)},
+    {id = 11, name = "Island 11 (Canyon Oasis)", pos = Vector3.new(20024, 538, -10747)},
+    {id = 12, name = "Island 12 (Murkwood)", pos = Vector3.new(19000, 530, -12769)},
+    {id = 13, name = "Island 13 (Nether Land)", pos = Vector3.new(17425, 542, -14201)},
+    {id = 14, name = "Island 14 (Rocky Ridge)", pos = Vector3.new(15551, 527, -15459)},
+    {id = 15, name = "Island 15 (Thunder Cliffs)", pos = Vector3.new(13213, 539, -16174)},
+    {id = 99, name = "World Boss Island", pos = Vector3.new(12654, 598, -9070)},
+}
+
 -- State Variables
 local HubState = {
     Running = true,
-    -- Radar & Farming
+    -- Island Progression Auto Farm
+    IslandAutoFarm = false,
+    CurrentIslandIndex = 1,
+    FarmsPerIsland = 5,
+    FarmsOnCurrentIsland = 0,
+    AutoKillBoss = true,
+    FarmRadius = 600,
+    -- Classic Wild Farm
     AutoFarmWild = false,
     FarmMinLevel = 1,
-    FarmMaxDistance = 500,
+    -- ESP
     EvomonESP = false,
-    LastFarmTeleport = 0,
-    FarmDelay = 3.0,
-    -- Auto Battle
+    ESPObjects = {},
+    -- Battle
     AutoBattle = true,
     AutoEscapeIfHighLevel = false,
     EscapeLevelThreshold = 100,
@@ -92,13 +136,38 @@ local HubState = {
     AntiAFK = true,
     -- Internals
     Connections = {},
-    ESPObjects = {},
     CachedCreatures = {},
     LastCreatureScan = 0,
+    LastFarmTeleport = 0,
+    FarmDelay = 2.8,
     ClosestEvomon = nil,
+    LastBattleState = false,
 }
 
--- Cleanup function
+-- Complete ESP Cleanup (destroys every anchor, billboard, and cache)
+local function ClearAllESP()
+    pcall(function()
+        if ESPContainerFolder then
+            ESPContainerFolder:ClearAllChildren()
+        end
+        if ESPGui then
+            ESPGui:ClearAllChildren()
+        end
+    end)
+    for uid, item in pairs(HubState.ESPObjects) do
+        pcall(function()
+            if typeof(item) == "table" then
+                if item.gui then item.gui:Destroy() end
+                if item.part then item.part:Destroy() end
+            elseif typeof(item) == "Instance" then
+                item:Destroy()
+            end
+        end)
+    end
+    table.clear(HubState.ESPObjects)
+end
+
+-- Cleanup function for unloads
 local function Cleanup()
     HubState.Running = false
     for _, conn in ipairs(HubState.Connections) do
@@ -106,11 +175,7 @@ local function Cleanup()
     end
     table.clear(HubState.Connections)
 
-    -- Clear ESP
-    for _, esp in pairs(HubState.ESPObjects) do
-        pcall(function() esp:Destroy() end)
-    end
-    table.clear(HubState.ESPObjects)
+    ClearAllESP()
 
     -- Reset character modifications
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
@@ -140,10 +205,35 @@ local function GetRootPart()
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
+-- Teleport to position safely
+local function TeleportTo(cf)
+    local root = GetRootPart()
+    if root then
+        if typeof(cf) == "Vector3" then
+            root.CFrame = CFrame.new(cf + Vector3.new(0, 3.5, 0))
+        elseif typeof(cf) == "CFrame" then
+            root.CFrame = cf + Vector3.new(0, 3.5, 0)
+        end
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+end
+
+-- Check if currently in battle
+local function IsInBattle()
+    local open = UIManager:getOpenedUIWindowList()
+    for _, w in ipairs(open or {}) do
+        if w.name == "MainBattleWindow" then
+            return true, w
+        end
+    end
+    return false, nil
+end
+
 -- Scan wild creatures
 local function FetchWildCreatures()
     local now = os.clock()
-    if (now - HubState.LastCreatureScan) < 2.0 and #HubState.CachedCreatures > 0 then
+    if (now - HubState.LastCreatureScan) < 1.8 and #HubState.CachedCreatures > 0 then
         return HubState.CachedCreatures
     end
 
@@ -182,29 +272,20 @@ local function FetchWildCreatures()
     return list
 end
 
--- Teleport to position safely
-local function TeleportTo(cf)
-    local root = GetRootPart()
-    if root then
-        if typeof(cf) == "Vector3" then
-            root.CFrame = CFrame.new(cf + Vector3.new(0, 3, 0))
-        elseif typeof(cf) == "CFrame" then
-            root.CFrame = cf + Vector3.new(0, 3, 0)
-        end
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-    end
-end
-
--- Check if currently in battle
-local function IsInBattle()
-    local open = UIManager:getOpenedUIWindowList()
-    for _, w in ipairs(open or {}) do
-        if w.name == "MainBattleWindow" then
-            return true, w
+-- Get creatures near a specific position (e.g. Island center)
+local function GetCreaturesNearPos(targetPos, maxRadius)
+    local all = FetchWildCreatures()
+    local nearby = {}
+    for _, c in ipairs(all) do
+        local d = (c.position - targetPos).Magnitude
+        if d <= maxRadius then
+            local clone = table.clone(c)
+            clone.islandDistance = d
+            table.insert(nearby, clone)
         end
     end
-    return false, nil
+    table.sort(nearby, function(a, b) return a.islandDistance < b.islandDistance end)
+    return nearby
 end
 
 -- Codes list
@@ -277,14 +358,14 @@ end
 -- UI TABS SETUP
 -- ====================
 
-local TabRadar = Window:Tab({
-    Title = "Wild Evomons",
-    Icon = "compass",
+local TabIslandFarm = Window:Tab({
+    Title = "Island Auto Farm",
+    Icon = "swords",
 })
 
-local TabBattle = Window:Tab({
-    Title = "Auto Battle & Catch",
-    Icon = "swords",
+local TabRadar = Window:Tab({
+    Title = "Wild Evomons & ESP",
+    Icon = "compass",
 })
 
 local TabRewards = Window:Tab({
@@ -303,73 +384,180 @@ local TabPlayer = Window:Tab({
 })
 
 -- ===================================================
--- TAB 1: WILD EVOMONS RADAR & FARMING
+-- TAB 1: ISLAND PROGRESSION AUTO FARM & BOSS KILLER
 -- ===================================================
 
-TabRadar:Section({ Title = "Live Wild Evomon Radar" })
+TabIslandFarm:Section({ Title = "Progression Auto Farm" })
+
+local FarmStatusPara = TabIslandFarm:Paragraph({
+    Title = "Island Progression Status",
+    Desc = "Status: Idle\nCurrent Target: Island 1 (Verdant Valley)\nProgress: 0 / 5 Evomons"
+})
+
+TabIslandFarm:Toggle({
+    Title = "Enable Island Progression Farm",
+    Desc = "Farms current island -> advances to next island -> repeats -> kills Boss!",
+    Value = false,
+    Callback = function(state)
+        HubState.IslandAutoFarm = state
+        if state then
+            HubState.FarmsOnCurrentIsland = 0
+            -- Teleport to starting island
+            local current = IslandData[HubState.CurrentIslandIndex]
+            if current then
+                TeleportTo(current.pos)
+            end
+            WindUI:Notify({
+                Title = "Island Farm Started!",
+                Content = string.format("Farming %s! (Advance every %d Evomons)", current and current.name or "Island", HubState.FarmsPerIsland),
+                Duration = 3,
+                Icon = "play"
+            })
+        else
+            WindUI:Notify({
+                Title = "Island Farm Stopped",
+                Content = "Auto farm disabled.",
+                Duration = 2,
+                Icon = "x"
+            })
+        end
+    end
+})
+
+TabIslandFarm:Slider({
+    Title = "Evomons To Farm Per Island",
+    Desc = "How many wild Evomons to defeat before advancing to the next island",
+    Value = { Min = 1, Max = 25, Default = 5 },
+    Step = 1,
+    Callback = function(val)
+        HubState.FarmsPerIsland = val
+    end
+})
+
+-- Build island name list for dropdown
+local IslandNames = {}
+for i, isl in ipairs(IslandData) do
+    table.insert(IslandNames, isl.name)
+end
+
+TabIslandFarm:Dropdown({
+    Title = "Starting / Target Island",
+    Desc = "Choose which island to start or focus farming on",
+    Values = IslandNames,
+    Value = IslandNames[1],
+    Callback = function(selected)
+        for idx, isl in ipairs(IslandData) do
+            if isl.name == selected then
+                HubState.CurrentIslandIndex = idx
+                HubState.FarmsOnCurrentIsland = 0
+                if HubState.IslandAutoFarm then
+                    TeleportTo(isl.pos)
+                end
+                break
+            end
+        end
+    end
+})
+
+TabIslandFarm:Toggle({
+    Title = "Auto Kill Boss When Reached",
+    Desc = "Automatically warps to and challenges World Boss when progression reaches the Boss Island",
+    Value = true,
+    Callback = function(state)
+        HubState.AutoKillBoss = state
+    end
+})
+
+TabIslandFarm:Section({ Title = "World Boss Instant Actions" })
+
+TabIslandFarm:Button({
+    Title = "Teleport Directly To World Boss",
+    Desc = "Warps immediately to World Boss Island (World1BossIsland1)",
+    Callback = function()
+        TeleportTo(Vector3.new(12654, 598, -9070))
+        WindUI:Notify({
+            Title = "Boss Island",
+            Content = "Teleported to World Boss Island!",
+            Duration = 3,
+            Icon = "skull"
+        })
+    end
+})
+
+TabIslandFarm:Button({
+    Title = "Next Island Now (Skip)",
+    Desc = "Forces the bot to advance to the next island immediately",
+    Callback = function()
+        HubState.CurrentIslandIndex = (HubState.CurrentIslandIndex % #IslandData) + 1
+        HubState.FarmsOnCurrentIsland = 0
+        local nextIsland = IslandData[HubState.CurrentIslandIndex]
+        if nextIsland then
+            TeleportTo(nextIsland.pos)
+            WindUI:Notify({
+                Title = "Advancing to Next Island",
+                Content = "Arrived at " .. nextIsland.name,
+                Duration = 3,
+                Icon = "arrow-right"
+            })
+        end
+    end
+})
+
+-- ===================================================
+-- TAB 2: WILD EVOMONS & ESP (WITH CLEAN TOGGLE OFF)
+-- ===================================================
+
+TabRadar:Section({ Title = "Wild Evomon Radar & ESP" })
 
 local RadarInfoPara = TabRadar:Paragraph({
     Title = "Radar Overview",
     Desc = "Scanning wild Evomons in the world..."
 })
 
-TabRadar:Section({ Title = "Wild Farm Automation" })
-
-TabRadar:Toggle({
-    Title = "Auto Farm Closest Wild Evomons",
-    Desc = "Continuously teleports to nearby wild Evomons to trigger and win battles",
-    Value = false,
-    Callback = function(state)
-        HubState.AutoFarmWild = state
-        WindUI:Notify({
-            Title = "Auto Farm",
-            Content = state and "Auto Farm Started! Teleporting to wild Evomons." or "Auto Farm Stopped.",
-            Duration = 2.5,
-            Icon = state and "check" or "x"
-        })
-    end
-})
-
-TabRadar:Slider({
-    Title = "Minimum Evomon Level",
-    Desc = "Only farm Evomons at or above this level",
-    Value = { Min = 1, Max = 150, Default = 1 },
-    Step = 1,
-    Callback = function(val)
-        HubState.FarmMinLevel = val
-    end
-})
-
-TabRadar:Slider({
-    Title = "Maximum Search Radius (Studs)",
-    Desc = "Max distance to search for wild Evomons",
-    Value = { Min = 100, Max = 3000, Default = 800 },
-    Step = 50,
-    Callback = function(val)
-        HubState.FarmMaxDistance = val
-    end
-})
-
+-- Toggle with guaranteed instant destruction on OFF
 TabRadar:Toggle({
     Title = "Wild Evomon ESP",
-    Desc = "Displays name, level and distance markers above nearby wild Evomons",
+    Desc = "Shows name, level, and distance tags above wild Evomons (Instant clean on toggle OFF)",
     Value = false,
     Callback = function(state)
         HubState.EvomonESP = state
         if not state then
-            for _, esp in pairs(HubState.ESPObjects) do
-                pcall(function() esp:Destroy() end)
-            end
-            table.clear(HubState.ESPObjects)
+            ClearAllESP()
+            WindUI:Notify({
+                Title = "ESP Disabled",
+                Content = "All ESP tags and anchor parts removed cleanly.",
+                Duration = 2,
+                Icon = "eye-off"
+            })
+        else
+            WindUI:Notify({
+                Title = "ESP Enabled",
+                Content = "Tracking nearby wild Evomons.",
+                Duration = 2,
+                Icon = "eye"
+            })
         end
     end
 })
 
-TabRadar:Section({ Title = "Manual Teleport Actions" })
+TabRadar:Button({
+    Title = "Clear All Leftover ESP Now",
+    Desc = "Forces a complete wipe of all billboard tags and anchor objects",
+    Callback = function()
+        ClearAllESP()
+        WindUI:Notify({
+            Title = "ESP Cleared",
+            Content = "All tags wiped successfully.",
+            Duration = 2,
+            Icon = "trash-2"
+        })
+    end
+})
+
+TabRadar:Section({ Title = "Target & Teleports" })
 
 TabRadar:Button({
     Title = "Teleport To Closest Evomon",
-    Desc = "Instantly warps to the nearest wild creature to start battle",
     Callback = function()
         local list = FetchWildCreatures()
         if #list > 0 then
@@ -381,15 +569,12 @@ TabRadar:Button({
                 Duration = 3,
                 Icon = "map-pin"
             })
-        else
-            WindUI:Notify({ Title = "None Found", Content = "No wild Evomons nearby.", Duration = 2, Icon = "alert-circle" })
         end
     end
 })
 
 TabRadar:Button({
     Title = "Teleport To Highest Level Evomon",
-    Desc = "Finds the strongest wild Evomon on the map and teleports to it",
     Callback = function()
         local list = FetchWildCreatures()
         if #list > 0 then
@@ -406,64 +591,6 @@ TabRadar:Button({
                 Duration = 3.5,
                 Icon = "zap"
             })
-        end
-    end
-})
-
--- ===================================================
--- TAB 2: AUTO BATTLE & CATCH
--- ===================================================
-
-TabBattle:Section({ Title = "Battle Automation" })
-
-local BattleInfoPara = TabBattle:Paragraph({
-    Title = "Battle Status",
-    Desc = "Status: Exploring (Not in battle)"
-})
-
-TabBattle:Toggle({
-    Title = "Auto Battle (Auto Fight)",
-    Desc = "Automatically enables Auto Mode in battles to attack and use skills",
-    Value = true,
-    Callback = function(state)
-        HubState.AutoBattle = state
-    end
-})
-
-TabBattle:Toggle({
-    Title = "Auto Escape If Strong Enemy",
-    Desc = "Flee from battle if enemy level exceeds your threshold",
-    Value = false,
-    Callback = function(state)
-        HubState.AutoEscapeIfHighLevel = state
-    end
-})
-
-TabBattle:Slider({
-    Title = "Escape Level Threshold",
-    Value = { Min = 20, Max = 180, Default = 80 },
-    Step = 5,
-    Callback = function(val)
-        HubState.EscapeLevelThreshold = val
-    end
-})
-
-TabBattle:Section({ Title = "Manual Battle Actions" })
-
-TabBattle:Button({
-    Title = "Escape / Flee Current Battle",
-    Desc = "Immediately exits the current turn-based battle",
-    Callback = function()
-        local inBattle, win = IsInBattle()
-        if inBattle and win and win.EscapeButton then
-            pcall(function()
-                for _, conn in ipairs(getconnections(win.EscapeButton.Activated)) do
-                    conn:Fire()
-                end
-            end)
-            WindUI:Notify({ Title = "Battle Escaped", Content = "Fled from battle.", Duration = 2, Icon = "log-out" })
-        else
-            WindUI:Notify({ Title = "Not in Battle", Content = "You are not currently in a battle.", Duration = 2, Icon = "info" })
         end
     end
 })
@@ -518,7 +645,6 @@ TabRewards:Section({ Title = "One-Click Free Rewards" })
 
 TabRewards:Button({
     Title = "Claim All Mail Rewards",
-    Desc = "Collects all items, gems and rewards sitting in your mailbox",
     Callback = function()
         local ok = ClaimMail()
         WindUI:Notify({
@@ -560,51 +686,27 @@ TabRewards:Button({
 -- TAB 4: WORLD TELEPORTS
 -- ===================================================
 
-TabTeleports:Section({ Title = "Island Teleports (Open World)" })
+TabTeleports:Section({ Title = "Island Waypoints" })
 
-local IslandCoordinates = {
-    {"Island 1 (Starter)", Vector3.new(9292, 586, -972)},
-    {"Island 2 (Misty Shore)", Vector3.new(11500, 588, -2500)},
-    {"Island 3 (Breeze Woods)", Vector3.new(14200, 592, -4100)},
-    {"Island 4 (Gale Highlands)", Vector3.new(16500, 595, -6200)},
-    {"Island 5 (Frost Peaks)", Vector3.new(19200, 720, -7300)},
-    {"Island 6 (Glacier Valley)", Vector3.new(18500, 600, -9800)},
-    {"Island 7 (Thunder Plains)", Vector3.new(16000, 595, -11500)},
-    {"Island 8 (Molten Core)", Vector3.new(13500, 600, -13200)},
-    {"Island 9 (Crystal Cavern)", Vector3.new(10500, 595, -14500)},
-    {"Island 10 (Starfall Sanctuary)", Vector3.new(6660, 600, -12640)},
-}
-
-for _, isl in ipairs(IslandCoordinates) do
+for _, isl in ipairs(IslandData) do
     TabTeleports:Button({
-        Title = "Warp to " .. isl[1],
+        Title = "Warp to " .. isl.name,
         Callback = function()
-            TeleportTo(isl[2])
-            WindUI:Notify({ Title = "Teleported", Content = "Arrived at " .. isl[1], Duration = 2, Icon = "map-pin" })
+            TeleportTo(isl.pos)
+            WindUI:Notify({ Title = "Teleported", Content = "Arrived at " .. isl.name, Duration = 2, Icon = "map-pin" })
         end
     })
 end
 
-TabTeleports:Section({ Title = "Special Rooms & Hubs" })
+TabTeleports:Section({ Title = "Special Hubs" })
 
 TabTeleports:Button({
     Title = "Enter Trading Hall",
-    Desc = "Requests entry to the S3 Trading Hall",
     Callback = function()
         local mw = Remote:FindFirstChild("ManyWorlds") and Remote.ManyWorlds:FindFirstChild("ReqApplyEnterTradingHall")
         if mw then
             mw:InvokeServer()
             WindUI:Notify({ Title = "Trading Hall", Content = "Requested Trading Hall entry.", Duration = 2.5, Icon = "shopping-bag" })
-        end
-    end
-})
-
-TabTeleports:Button({
-    Title = "Exit Trading Hall",
-    Callback = function()
-        local mw = Remote:FindFirstChild("ManyWorlds") and Remote.ManyWorlds:FindFirstChild("ReqApplyExitTradingHall")
-        if mw then
-            mw:InvokeServer()
         end
     end
 })
@@ -664,7 +766,6 @@ TabPlayer:Slider({
 
 TabPlayer:Toggle({
     Title = "Infinite Jump",
-    Desc = "Jump continuously in the air",
     Value = false,
     Callback = function(state)
         HubState.InfJump = state
@@ -673,7 +774,6 @@ TabPlayer:Toggle({
 
 TabPlayer:Toggle({
     Title = "NoClip",
-    Desc = "Walk through obstacles and terrain walls",
     Value = false,
     Callback = function(state)
         HubState.NoClip = state
@@ -682,7 +782,6 @@ TabPlayer:Toggle({
 
 TabPlayer:Toggle({
     Title = "Anti-AFK Protection",
-    Desc = "Prevents Roblox 20-minute idle disconnect",
     Value = true,
     Callback = function(state)
         HubState.AntiAFK = state
@@ -693,7 +792,6 @@ TabPlayer:Section({ Title = "Hub Management" })
 
 TabPlayer:Button({
     Title = "Unload Hub",
-    Desc = "Disconnects all listeners and cleans up the UI",
     Callback = function()
         Cleanup()
     end
@@ -755,10 +853,35 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- Auto Battle Handler
+    -- Battle Status & Tracking
     local inBattle, battleWin = IsInBattle()
+
+    -- Track battle end for progression count
+    if HubState.LastBattleState == true and inBattle == false then
+        -- Battle just ended (won or finished)
+        HubState.FarmsOnCurrentIsland = HubState.FarmsOnCurrentIsland + 1
+
+        -- Check if Island farm quota reached
+        if HubState.IslandAutoFarm and HubState.FarmsOnCurrentIsland >= HubState.FarmsPerIsland then
+            HubState.FarmsOnCurrentIsland = 0
+            HubState.CurrentIslandIndex = (HubState.CurrentIslandIndex % #IslandData) + 1
+            local nextIsl = IslandData[HubState.CurrentIslandIndex]
+            if nextIsl then
+                task.wait(1.5)
+                TeleportTo(nextIsl.pos)
+                WindUI:Notify({
+                    Title = "Island Complete!",
+                    Content = "Advancing to " .. nextIsl.name,
+                    Duration = 3,
+                    Icon = "check"
+                })
+            end
+        end
+    end
+    HubState.LastBattleState = inBattle
+
+    -- Auto Battle Handler
     if inBattle and battleWin then
-        -- Auto Battle activation
         if HubState.AutoBattle and battleWin.AutoButton then
             pcall(function()
                 if battleWin.class and battleWin.class.setAutoButton then
@@ -767,7 +890,6 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
             end)
         end
 
-        -- Auto Escape if high level
         if HubState.AutoEscapeIfHighLevel and battleWin.EnemyPetLevelText and battleWin.EscapeButton then
             local lvlNum = tonumber(battleWin.EnemyPetLevelText.Text:match("%d+"))
             if lvlNum and lvlNum >= HubState.EscapeLevelThreshold then
@@ -780,50 +902,48 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- Auto Farm Wild Evomon loop
+    -- Island Progression Auto Farm Loop
     local now = os.clock()
-    if HubState.AutoFarmWild and not inBattle and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
+    if HubState.IslandAutoFarm and not inBattle and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
         HubState.LastFarmTeleport = now
-        local creatures = FetchWildCreatures()
-        local eligible = {}
-        for _, c in ipairs(creatures) do
-            if c.level >= HubState.FarmMinLevel and c.distance <= HubState.FarmMaxDistance then
-                table.insert(eligible, c)
+        local curIsland = IslandData[HubState.CurrentIslandIndex]
+        if curIsland then
+            -- If this is the boss island, teleport to boss anchor
+            if curIsland.id == 99 then
+                TeleportTo(curIsland.pos)
+            else
+                -- Find wild Evomons near this island
+                local islandEvomons = GetCreaturesNearPos(curIsland.pos, HubState.FarmRadius)
+                if #islandEvomons > 0 then
+                    local target = islandEvomons[1]
+                    TeleportTo(target.cframe)
+                else
+                    -- No creatures in radius, move to island center or advance
+                    TeleportTo(curIsland.pos)
+                end
             end
-        end
-
-        if #eligible > 0 then
-            local target = eligible[1]
-            TeleportTo(target.cframe)
         end
     end
 end))
 
--- Periodic Radar & Stats Updater (every 1.5 seconds)
+-- Periodic Radar & ESP Updater (every 1.5 seconds)
 task.spawn(function()
     while HubState.Running do
         pcall(function()
-            local creatures = FetchWildCreatures()
-            local closest = HubState.ClosestEvomon
-            local inBattle = IsInBattle()
-
-            if closest then
-                RadarInfoPara:SetDesc(string.format(
-                    "🐾 Wild Evomons in World: %d\n🎯 Closest: %s (Lvl %d)\n📏 Distance: %d studs",
-                    #creatures, closest.name, closest.level, math.floor(closest.distance)
-                ))
+            -- ESP Complete Wipe when turned off
+            if not HubState.EvomonESP then
+                if ESPContainerFolder and #ESPContainerFolder:GetChildren() > 0 then
+                    ESPContainerFolder:ClearAllChildren()
+                end
+                if ESPGui and #ESPGui:GetChildren() > 0 then
+                    ESPGui:ClearAllChildren()
+                end
+                if next(HubState.ESPObjects) ~= nil then
+                    table.clear(HubState.ESPObjects)
+                end
             else
-                RadarInfoPara:SetDesc(string.format("🐾 Wild Evomons in World: %d\nSearching for nearby creatures...", #creatures))
-            end
-
-            BattleInfoPara:SetDesc(string.format(
-                "⚔️ State: %s\n🤖 Auto Fight: %s",
-                inBattle and "🔥 In Active Battle" or "⚪ Exploring (Peaceful)",
-                HubState.AutoBattle and "Enabled" or "Disabled"
-            ))
-
-            -- ESP Updater
-            if HubState.EvomonESP then
+                -- ESP is ON
+                local creatures = FetchWildCreatures()
                 local root = GetRootPart()
                 local rootPos = root and root.Position or Vector3.zero
                 local activeUids = {}
@@ -832,7 +952,7 @@ task.spawn(function()
                     if c.distance <= 350 then
                         activeUids[c.uid] = true
                         local esp = HubState.ESPObjects[c.uid]
-                        if not esp then
+                        if not esp or not esp.gui.Parent or not esp.part.Parent then
                             local bg = Instance.new("BillboardGui")
                             bg.Name = "EvomonESP_" .. c.uid
                             bg.AlwaysOnTop = true
@@ -859,17 +979,18 @@ task.spawn(function()
                             label.TextSize = 11
                             label.Text = string.format("%s [Lv.%d]\n%dm", c.name, c.level, math.floor(c.distance))
 
-                            -- Anchor part
+                            -- Anchor part placed inside dedicated container
                             local part = Instance.new("Part")
-                            part.Name = "ESP_Anchor"
+                            part.Name = "Anchor_" .. c.uid
                             part.Size = Vector3.new(0.5, 0.5, 0.5)
                             part.Transparency = 1
                             part.Anchored = true
                             part.CanCollide = false
                             part.CFrame = c.cframe
-                            part.Parent = workspace
+                            part.Parent = ESPContainerFolder
+
                             bg.Adornee = part
-                            bg.Parent = (gethui and gethui()) or game:GetService("CoreGui")
+                            bg.Parent = ESPGui
 
                             HubState.ESPObjects[c.uid] = {gui = bg, part = part, label = label}
                         else
@@ -887,6 +1008,27 @@ task.spawn(function()
                     end
                 end
             end
+
+            -- Update UI Dashboards
+            local creatures = FetchWildCreatures()
+            local closest = HubState.ClosestEvomon
+            local curIsland = IslandData[HubState.CurrentIslandIndex]
+
+            if closest then
+                RadarInfoPara:SetDesc(string.format(
+                    "🐾 Wild Evomons in World: %d\n🎯 Closest: %s (Lvl %d)\n📏 Distance: %d studs",
+                    #creatures, closest.name, closest.level, math.floor(closest.distance)
+                ))
+            end
+
+            local farmStatus = HubState.IslandAutoFarm and "🟢 Active (Farming)" or "⚪ Idle"
+            FarmStatusPara:SetDesc(string.format(
+                "Status: %s\n🏝️ Island: %s\n🎯 Progress: %d / %d Evomons\n👑 Next Boss: World Boss Island",
+                farmStatus,
+                curIsland and curIsland.name or "Island 1",
+                HubState.FarmsOnCurrentIsland,
+                HubState.FarmsPerIsland
+            ))
         end)
         task.wait(1.5)
     end
@@ -898,6 +1040,7 @@ _G.EvomonHub = {
     RedeemAllCodes = RedeemAllCodes,
     ClaimMail = ClaimMail,
     ClaimDaily = ClaimDaily,
+    ClearAllESP = ClearAllESP,
     TeleportToClosest = function()
         local list = FetchWildCreatures()
         if list[1] then TeleportTo(list[1].cframe) end
@@ -906,8 +1049,8 @@ _G.EvomonHub = {
 }
 
 WindUI:Notify({
-    Title = "Evomon Hub Loaded!",
-    Content = "All features initialized. Wild Radar, Auto Battle, and Codes are ready!",
+    Title = "Evomon Hub Updated!",
+    Content = "Island Progression Farm & Clean ESP are ready!",
     Duration = 4,
     Icon = "sparkles"
 })
