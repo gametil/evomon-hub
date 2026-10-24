@@ -43,6 +43,14 @@ end
 local Config = ReplicatedStorage:WaitForChild("Config", 30)
 local PetConfig = Config and require(Config:WaitForChild("PetConfig", 10))
 local GoalConfig = Config and require(Config:WaitForChild("GoalConfig", 10))
+local BattlePoolConfig = nil
+pcall(function()
+    BattlePoolConfig = require(ReplicatedStorage.Config.BattlePoolConfig)
+end)
+local BattleTrainerConfig = nil
+pcall(function()
+    BattleTrainerConfig = require(ReplicatedStorage.Config.BattleTrainerConfig)
+end)
 local UIManager = require(ReplicatedStorage.Core.UI.UIManager)
 
 local BattleService = nil
@@ -437,6 +445,10 @@ local function ExecuteQuestStep()
             local tc = require(ReplicatedStorage.Controller.TaskController)
             if tc and tc.claimTask then tc.claimTask(quest.taskId) end
         end)
+        pcall(function()
+            local ts = require(ReplicatedStorage.Script.Task.TaskService)
+            if ts and ts.reqCompleteTask then ts.reqCompleteTask(quest.taskId) end
+        end)
         DismissBlockingWindows()
         WindUI:Notify({
             Title = "Quest Completed!",
@@ -485,11 +497,21 @@ local function ExecuteQuestStep()
             end)
             return
         else
-            -- If creature is not currently nearby, warp to the island mentioned in quest title
+            -- If creature is not currently nearby, warp to the island mentioned in quest title or cycle
+            local warped = false
             for _, isl in ipairs(IslandData) do
                 local islandCleanName = isl.name:match("%((.+)%)") or isl.name
                 if string.find(quest.name:lower(), islandCleanName:lower()) then
                     TeleportTo(isl.pos)
+                    warped = true
+                    return
+                end
+            end
+            if not warped then
+                HubState.CurrentIslandIndex = (HubState.CurrentIslandIndex % #IslandData) + 1
+                local nextIsl = IslandData[HubState.CurrentIslandIndex]
+                if nextIsl then
+                    TeleportTo(nextIsl.pos)
                     return
                 end
             end
@@ -564,6 +586,13 @@ local function ExecuteQuestStep()
     -- Goal Type 10: Dialogue / Talk to NPC
     elseif gType == 10 then
         local npcId = gParams and gParams[1]
+        for _, isl in ipairs(IslandData) do
+            local islandCleanName = isl.name:match("%((.+)%)") or isl.name
+            if string.find(quest.name:lower(), islandCleanName:lower()) then
+                TeleportTo(isl.pos)
+                break
+            end
+        end
         if npcId then
             pcall(function()
                 if Remote:FindFirstChild("Dialogue") then
@@ -579,19 +608,158 @@ local function ExecuteQuestStep()
                 end
             end)
         end
+        return
 
-    -- Goal Type 22 or 39: Defeat NPC / Boss
+    -- Goal Type 22 or 39: Defeat NPC / Boss Challenge (e.g. Olivia, Island Trainers)
     elseif gType == 22 or gType == 39 then
-        local npcId = gParams and gParams[1]
-        if npcId then
-            pcall(function()
-                if Remote.Battle:FindFirstChild("ReqEnterNpcBattle") then
-                    Remote.Battle.ReqEnterNpcBattle:FireServer(npcId)
+        local battlePoolId = gParams and gParams[1]
+        local trainerId = nil
+        local trainerName = nil
+        local trainerModel = nil
+
+        -- Lookup BattlePoolConfig to resolve trainer ID
+        pcall(function()
+            local bpConfig = BattlePoolConfig or (Config and require(Config:FindFirstChild("BattlePoolConfig")))
+            if bpConfig and battlePoolId and bpConfig[battlePoolId] then
+                local bp = bpConfig[battlePoolId]
+                if bp.positionTrainers and #bp.positionTrainers > 0 then
+                    trainerId = bp.positionTrainers[1]
                 end
-                if Remote.Battle:FindFirstChild("ReqEnterActualNpcBattle") then
-                    Remote.Battle.ReqEnterActualNpcBattle:InvokeServer(npcId)
+            end
+        end)
+
+        if not trainerId and battlePoolId and battlePoolId < 100000 then
+            trainerId = battlePoolId
+        end
+
+        pcall(function()
+            local trConfig = BattleTrainerConfig or (Config and require(Config:FindFirstChild("BattleTrainerConfig")))
+            if trConfig and trainerId and trConfig[trainerId] then
+                local tr = trConfig[trainerId]
+                trainerName = tr.name
+                trainerModel = tr.model
+            end
+        end)
+
+        -- Fallback: extract NPC name from quest title (e.g. "Defeat Olivia in Amber Acres")
+        if not trainerName and quest.name then
+            local n = quest.name:match("Defeat%s+([%a%s]+)%s+in") or quest.name:match("Defeat%s+([%a%s]+)")
+            if n then
+                trainerName = n:gsub("^%s*(.-)%s*$", "%1")
+            end
+        end
+
+        -- Search for NPC entity in wild creatures or workspace
+        local targetNPC = nil
+
+        -- 1. Check allCreatures
+        if trainerId or trainerName then
+            for _, c in ipairs(allCreatures) do
+                local match = false
+                if trainerId and (c.cfgId == trainerId or tostring(c.uid) == tostring(trainerId)) then
+                    match = true
+                elseif trainerName and string.find(c.name:lower(), trainerName:lower()) then
+                    match = true
+                end
+                if match then
+                    targetNPC = c
+                    break
+                end
+            end
+        end
+
+        -- 2. Search workspace / RuntimeCache directly for the NPC model
+        if not targetNPC then
+            pcall(function()
+                local searchFolders = {
+                    workspace:FindFirstChild("RuntimeCache") and workspace.RuntimeCache:FindFirstChild("RuntimeCacheServer") and workspace.RuntimeCache.RuntimeCacheServer:FindFirstChild("CreatureModelCache"),
+                    workspace:FindFirstChild("NPC"),
+                    workspace:FindFirstChild("Npcs"),
+                    workspace:FindFirstChild("Map")
+                }
+                for _, folder in ipairs(searchFolders) do
+                    if folder and not targetNPC then
+                        for _, child in ipairs(folder:GetChildren()) do
+                            local match = false
+                            if trainerName and string.find(child.Name:lower(), trainerName:lower()) then match = true end
+                            if trainerModel and string.find(child.Name:lower(), trainerModel:lower()) then match = true end
+                            if trainerId and string.find(child.Name, tostring(trainerId)) then match = true end
+                            if match then
+                                local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart") or child:FindFirstChild("HumanoidRootPart")
+                                if primary then
+                                    targetNPC = {
+                                        uid = child.Name,
+                                        cframe = primary.CFrame,
+                                        name = trainerName or child.Name
+                                    }
+                                    break
+                                end
+                            end
+                        end
+                    end
                 end
             end)
+        end
+
+        -- 3. If target NPC found, teleport directly and challenge!
+        if targetNPC and targetNPC.cframe then
+            TeleportTo(targetNPC.cframe + Vector3.new(0, 0, 3))
+            task.delay(0.25, function()
+                if IsInBattle() then return end
+                local mainPetUid = nil
+                pcall(function()
+                    local ps = require(ReplicatedStorage.Script.Pet.PetService)
+                    if ps and ps.getMainPetUid then mainPetUid = tostring(ps.getMainPetUid()) end
+                end)
+
+                local targetCid = tonumber(targetNPC.uid) or trainerId or 1004
+                local bId = tonumber(battlePoolId) or 11000004
+
+                -- Invoke battle entry via BattleService & Remotes with full parameter sets
+                pcall(function()
+                    if BattleService and BattleService.enterActualNpcBattle and mainPetUid then
+                        BattleService.enterActualNpcBattle(targetCid, bId, mainPetUid)
+                    end
+                end)
+                pcall(function()
+                    if BattleService and BattleService.enterNpcBattle then
+                        BattleService.enterNpcBattle(targetCid, bId)
+                    end
+                end)
+                pcall(function()
+                    if Remote and Remote:FindFirstChild("Battle") and Remote.Battle:FindFirstChild("ReqEnterNpcBattle") then
+                        if mainPetUid then
+                            Remote.Battle.ReqEnterNpcBattle:FireServer(targetCid, bId, mainPetUid)
+                        end
+                        Remote.Battle.ReqEnterNpcBattle:FireServer(targetCid, bId)
+                    end
+                end)
+
+                -- Check ProximityPrompt on model if any
+                pcall(function()
+                    local cache = workspace:FindFirstChild("RuntimeCache")
+                    if cache then cache = cache:FindFirstChild("RuntimeCacheServer") end
+                    if cache then cache = cache:FindFirstChild("CreatureModelCache") end
+                    local m = cache and (cache:FindFirstChild(tostring(targetNPC.uid)) or (trainerModel and cache:FindFirstChild(trainerModel)))
+                    if m then
+                        for _, desc in ipairs(m:GetDescendants()) do
+                            if desc:IsA("ProximityPrompt") and fireproximityprompt then
+                                fireproximityprompt(desc)
+                            end
+                        end
+                    end
+                end)
+            end)
+            return
+        else
+            -- NPC not found on current island: warp to the island mentioned in the quest!
+            for _, isl in ipairs(IslandData) do
+                local islandCleanName = isl.name:match("%((.+)%)") or isl.name
+                if string.find(quest.name:lower(), islandCleanName:lower()) then
+                    TeleportTo(isl.pos)
+                    return
+                end
+            end
         end
 
     -- Goal Type 34: Feed Evomon
@@ -611,6 +779,13 @@ local function ExecuteQuestStep()
         if islandId and IslandData[islandId] then
             TeleportTo(IslandData[islandId].pos)
             return
+        end
+        for _, isl in ipairs(IslandData) do
+            local islandCleanName = isl.name:match("%((.+)%)") or isl.name
+            if string.find(quest.name:lower(), islandCleanName:lower()) then
+                TeleportTo(isl.pos)
+                return
+            end
         end
 
     -- Goal Type 42: Breakthrough tier
