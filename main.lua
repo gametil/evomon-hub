@@ -6,8 +6,11 @@
     Features:
       - Clean ESP Visualizer (Bug-free instant wipe on toggle OFF)
       - Island Progression Auto Farm (Farms island, advances to next island, kills boss)
-      - Wild Evomon Radar & Teleports (Closest, High Level, Shiny/Rare)
-      - Auto Battle & Skill Executor
+      - Active Wild Evomon Fighting (Teleports & initiates battle via BattleService)
+      - Controlled In-Game Auto Battle 'V' Mode (Applied once on entry; toggle OFF actually stays OFF)
+      - Auto Level Breakthrough & Auto Claim Level Rewards
+      - Auto Dismiss Popups & Level-Up Windows (Prevents UI lockups during farming)
+      - Wild Evomon Radar & Instant Fight / Teleports
       - Boss Island & World Boss Farm
       - One-Click Auto Redeem All Active Codes
       - Auto Claim Mail, Daily, & Group Rewards
@@ -40,6 +43,11 @@ local Config = ReplicatedStorage:WaitForChild("Config", 30)
 local PetConfig = Config and require(Config:WaitForChild("PetConfig", 10))
 local UIManager = require(ReplicatedStorage.Core.UI.UIManager)
 
+local BattleService = nil
+pcall(function()
+    BattleService = require(ReplicatedStorage:WaitForChild("Script", 10):WaitForChild("Battle", 10):WaitForChild("BattleService", 10))
+end)
+
 -- Dedicated Containers for Clean ESP (Zero leftovers on toggle OFF)
 local ESPContainerFolder = workspace:FindFirstChild("Evomon_ESP_Anchors")
 if not ESPContainerFolder then
@@ -65,7 +73,7 @@ local Window = WindUI:CreateWindow({
     Icon = "sparkles",
     Author = "by Antigravity & WindUI",
     Folder = "EvomonHubConfig",
-    Size = UDim2.fromOffset(640, 520),
+    Size = UDim2.fromOffset(640, 530),
     Theme = "Dark",
     Transparent = true,
     Resizable = true,
@@ -116,16 +124,16 @@ local HubState = {
     FarmsOnCurrentIsland = 0,
     AutoKillBoss = true,
     FarmRadius = 600,
-    -- Classic Wild Farm
-    AutoFarmWild = false,
-    FarmMinLevel = 1,
+    -- Battle & Level Up
+    AutoBattle = true,
+    AutoLevelBreakthrough = true,
+    AutoClaimLevelRewards = true,
+    AutoDismissPopups = true,
+    AutoEscapeIfHighLevel = false,
+    EscapeLevelThreshold = 100,
     -- ESP
     EvomonESP = false,
     ESPObjects = {},
-    -- Battle
-    AutoBattle = true,
-    AutoEscapeIfHighLevel = false,
-    EscapeLevelThreshold = 100,
     -- Player Mods
     SpeedEnabled = false,
     CustomSpeed = 24,
@@ -139,7 +147,8 @@ local HubState = {
     CachedCreatures = {},
     LastCreatureScan = 0,
     LastFarmTeleport = 0,
-    FarmDelay = 2.8,
+    LastPeriodicCheck = 0,
+    FarmDelay = 2.5,
     ClosestEvomon = nil,
     LastBattleState = false,
 }
@@ -210,30 +219,95 @@ local function TeleportTo(cf)
     local root = GetRootPart()
     if root then
         if typeof(cf) == "Vector3" then
-            root.CFrame = CFrame.new(cf + Vector3.new(0, 3.5, 0))
+            root.CFrame = CFrame.new(cf + Vector3.new(0, 3.2, 0))
         elseif typeof(cf) == "CFrame" then
-            root.CFrame = cf + Vector3.new(0, 3.5, 0)
+            root.CFrame = cf + Vector3.new(0, 3.2, 0)
         end
         root.AssemblyLinearVelocity = Vector3.zero
         root.AssemblyAngularVelocity = Vector3.zero
     end
 end
 
--- Check if currently in battle
-local function IsInBattle()
+-- Check if a specific window is open in UIManager
+local function IsWindowOpen(name)
     local open = UIManager:getOpenedUIWindowList()
     for _, w in ipairs(open or {}) do
-        if w.name == "MainBattleWindow" then
+        if w.name == name then
             return true, w
         end
     end
     return false, nil
 end
 
+-- Check if currently in battle
+local function IsInBattle()
+    local open, bw = IsWindowOpen("MainBattleWindow")
+    if open then
+        return true, bw
+    end
+    if BattleService and BattleService.hasActiveBattleSession and BattleService.hasActiveBattleSession() then
+        return true, nil
+    end
+    return false, nil
+end
+
+-- Safely set in-game Auto Battle ('V' button) without spamming
+local function SetAutoBattleState(enable)
+    if not BattleService then return end
+    pcall(function()
+        BattleService.autoBattle(enable)
+    end)
+    local inBattle, battleWin = IsWindowOpen("MainBattleWindow")
+    if inBattle and battleWin and battleWin.class and battleWin.class.setAutoButton then
+        pcall(function()
+            battleWin.class.setAutoButton(battleWin, enable)
+        end)
+    end
+end
+
+-- Trigger Level Breakthrough (breaks Evomon & Player level caps)
+local function TriggerLevelBreakthrough()
+    local lvRemote = Remote:FindFirstChild("Lv") and Remote.Lv:FindFirstChild("ReqLevelBreakthrough")
+    if lvRemote then
+        pcall(function()
+            lvRemote:InvokeServer()
+        end)
+    end
+end
+
+-- Claim Player Level Rewards
+local function TriggerClaimLevelRewards()
+    local lrRemote = Remote:FindFirstChild("PlayerLevelReward") and Remote.PlayerLevelReward:FindFirstChild("ReqClaimPlayerLevelReward")
+    if lrRemote then
+        pcall(function()
+            lrRemote:InvokeServer()
+        end)
+    end
+end
+
+-- Dismiss blocking reward, skill & level-up popups so the bot never gets stuck
+local function DismissBlockingWindows()
+    pcall(function()
+        local blockingList = {
+            "GetRewardPopUpWindow",
+            "LevelRewardsWindow",
+            "LevelUPEffectWindow",
+            "CommGetRewardTipWindow",
+            "CommonRewardClaimWindow",
+            "SkillReplaceWindow"
+        }
+        for _, winName in ipairs(blockingList) do
+            if UIManager:isOpen(winName) then
+                UIManager:close(winName)
+            end
+        end
+    end)
+end
+
 -- Scan wild creatures
 local function FetchWildCreatures()
     local now = os.clock()
-    if (now - HubState.LastCreatureScan) < 1.8 and #HubState.CachedCreatures > 0 then
+    if (now - HubState.LastCreatureScan) < 1.6 and #HubState.CachedCreatures > 0 then
         return HubState.CachedCreatures
     end
 
@@ -396,13 +470,12 @@ local FarmStatusPara = TabIslandFarm:Paragraph({
 
 TabIslandFarm:Toggle({
     Title = "Enable Island Progression Farm",
-    Desc = "Farms current island -> advances to next island -> repeats -> kills Boss!",
+    Desc = "Teleports to wild Evomons -> engages battle -> advances to next island -> repeats -> kills Boss!",
     Value = false,
     Callback = function(state)
         HubState.IslandAutoFarm = state
         if state then
             HubState.FarmsOnCurrentIsland = 0
-            -- Teleport to starting island
             local current = IslandData[HubState.CurrentIslandIndex]
             if current then
                 TeleportTo(current.pos)
@@ -459,6 +532,95 @@ TabIslandFarm:Dropdown({
     end
 })
 
+TabIslandFarm:Section({ Title = "Combat & Leveling Controls" })
+
+TabIslandFarm:Toggle({
+    Title = "Auto Battle (V Mode)",
+    Desc = "Auto-activates in-game 'V' mode once when entering battle. Turning this OFF stays OFF without reverting!",
+    Value = HubState.AutoBattle,
+    Callback = function(state)
+        HubState.AutoBattle = state
+        SetAutoBattleState(state)
+        if not state then
+            WindUI:Notify({
+                Title = "Auto Battle Disabled",
+                Content = "Auto battle (V) mode is turned off and won't auto-enable.",
+                Duration = 2.5,
+                Icon = "shield-off"
+            })
+        else
+            WindUI:Notify({
+                Title = "Auto Battle Enabled",
+                Content = "Will engage auto battle (V) upon entering combat.",
+                Duration = 2.5,
+                Icon = "swords"
+            })
+        end
+    end
+})
+
+TabIslandFarm:Toggle({
+    Title = "Auto Level Breakthrough",
+    Desc = "Automatically breaks through Evomon & player level caps when max level is reached",
+    Value = true,
+    Callback = function(state)
+        HubState.AutoLevelBreakthrough = state
+        if state then
+            TriggerLevelBreakthrough()
+        end
+    end
+})
+
+TabIslandFarm:Toggle({
+    Title = "Auto Claim Level Rewards",
+    Desc = "Automatically claims rewards whenever your player or Evomons level up",
+    Value = true,
+    Callback = function(state)
+        HubState.AutoClaimLevelRewards = state
+        if state then
+            TriggerClaimLevelRewards()
+        end
+    end
+})
+
+TabIslandFarm:Toggle({
+    Title = "Auto Dismiss Popups / Level Windows",
+    Desc = "Closes reward and skill popups after battle so farming never freezes or gets stuck",
+    Value = true,
+    Callback = function(state)
+        HubState.AutoDismissPopups = state
+    end
+})
+
+TabIslandFarm:Button({
+    Title = "Breakthrough Level Cap Now",
+    Desc = "Manually triggers level breakthrough for Evomons & player",
+    Callback = function()
+        TriggerLevelBreakthrough()
+        WindUI:Notify({ Title = "Level Breakthrough", Content = "Triggered level breakthrough request.", Duration = 2.5, Icon = "zap" })
+    end
+})
+
+TabIslandFarm:Button({
+    Title = "Claim Level Rewards Now",
+    Desc = "Manually claims any pending player level rewards",
+    Callback = function()
+        TriggerClaimLevelRewards()
+        WindUI:Notify({ Title = "Level Rewards", Content = "Triggered level reward claim request.", Duration = 2.5, Icon = "gift" })
+    end
+})
+
+TabIslandFarm:Button({
+    Title = "Dismiss All Popups Now",
+    Desc = "Force-closes any open reward, skill replacement, or level-up windows",
+    Callback = function()
+        DismissBlockingWindows()
+        WindUI:Notify({ Title = "Dismiss Popups", Content = "Closed blocking popups.", Duration = 2, Icon = "x" })
+    end
+})
+
+TabIslandFarm:Section({ Title = "World Boss Instant Actions" })
+
 TabIslandFarm:Toggle({
     Title = "Auto Kill Boss When Reached",
     Desc = "Automatically warps to and challenges World Boss when progression reaches the Boss Island",
@@ -467,8 +629,6 @@ TabIslandFarm:Toggle({
         HubState.AutoKillBoss = state
     end
 })
-
-TabIslandFarm:Section({ Title = "World Boss Instant Actions" })
 
 TabIslandFarm:Button({
     Title = "Teleport Directly To World Boss",
@@ -554,7 +714,32 @@ TabRadar:Button({
     end
 })
 
-TabRadar:Section({ Title = "Target & Teleports" })
+TabRadar:Section({ Title = "Target & Active Battles" })
+
+TabRadar:Button({
+    Title = "Fight Closest Evomon Now",
+    Desc = "Teleports to the closest Evomon and immediately initiates battle",
+    Callback = function()
+        local list = FetchWildCreatures()
+        if #list > 0 then
+            local target = list[1]
+            TeleportTo(target.cframe)
+            task.delay(0.2, function()
+                if BattleService and BattleService.enterPetBattle then
+                    pcall(function()
+                        BattleService.enterPetBattle(tostring(target.uid))
+                    end)
+                end
+            end)
+            WindUI:Notify({
+                Title = "Fighting " .. target.name,
+                Content = string.format("Level %d - Starting Battle!", target.level),
+                Duration = 3,
+                Icon = "swords"
+            })
+        end
+    end
+})
 
 TabRadar:Button({
     Title = "Teleport To Closest Evomon",
@@ -855,11 +1040,43 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
 
     -- Battle Status & Tracking
     local inBattle, battleWin = IsInBattle()
+    local sessionActive = (BattleService and BattleService.hasActiveBattleSession and BattleService.hasActiveBattleSession()) or false
+    local currentCombat = inBattle or sessionActive
 
-    -- Track battle end for progression count
-    if HubState.LastBattleState == true and inBattle == false then
-        -- Battle just ended (won or finished)
+    -- Track battle start -> Apply Auto Battle ONCE (Never spam on Heartbeat)
+    if HubState.LastBattleState == false and currentCombat == true then
+        if HubState.AutoBattle then
+            task.spawn(function()
+                task.wait(0.25)
+                SetAutoBattleState(true)
+            end)
+        end
+    end
+
+    -- Track battle end -> Progression count, level cap breakthrough & claim rewards
+    if HubState.LastBattleState == true and currentCombat == false then
         HubState.FarmsOnCurrentIsland = HubState.FarmsOnCurrentIsland + 1
+
+        -- Ensure any residual session is marked complete
+        pcall(function()
+            if BattleService and BattleService.completeBattleSession then
+                BattleService.completeBattleSession()
+            end
+        end)
+
+        -- Post-battle level up & reward handling
+        task.spawn(function()
+            task.wait(0.4)
+            if HubState.AutoDismissPopups then
+                DismissBlockingWindows()
+            end
+            if HubState.AutoLevelBreakthrough then
+                TriggerLevelBreakthrough()
+            end
+            if HubState.AutoClaimLevelRewards then
+                TriggerClaimLevelRewards()
+            end
+        end)
 
         -- Check if Island farm quota reached
         if HubState.IslandAutoFarm and HubState.FarmsOnCurrentIsland >= HubState.FarmsPerIsland then
@@ -867,7 +1084,7 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
             HubState.CurrentIslandIndex = (HubState.CurrentIslandIndex % #IslandData) + 1
             local nextIsl = IslandData[HubState.CurrentIslandIndex]
             if nextIsl then
-                task.wait(1.5)
+                task.wait(1.2)
                 TeleportTo(nextIsl.pos)
                 WindUI:Notify({
                     Title = "Island Complete!",
@@ -878,47 +1095,56 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
             end
         end
     end
-    HubState.LastBattleState = inBattle
+    HubState.LastBattleState = currentCombat
 
-    -- Auto Battle Handler
-    if inBattle and battleWin then
-        if HubState.AutoBattle and battleWin.AutoButton then
+    -- Escape Helper (Only if configured)
+    if inBattle and battleWin and HubState.AutoEscapeIfHighLevel and battleWin.EnemyPetLevelText and battleWin.EscapeButton then
+        local lvlNum = tonumber(battleWin.EnemyPetLevelText.Text:match("%d+"))
+        if lvlNum and lvlNum >= HubState.EscapeLevelThreshold then
             pcall(function()
-                if battleWin.class and battleWin.class.setAutoButton then
-                    battleWin.class.setAutoButton(battleWin, true)
+                for _, c in ipairs(getconnections(battleWin.EscapeButton.Activated)) do
+                    c:Fire()
                 end
             end)
         end
-
-        if HubState.AutoEscapeIfHighLevel and battleWin.EnemyPetLevelText and battleWin.EscapeButton then
-            local lvlNum = tonumber(battleWin.EnemyPetLevelText.Text:match("%d+"))
-            if lvlNum and lvlNum >= HubState.EscapeLevelThreshold then
-                pcall(function()
-                    for _, c in ipairs(getconnections(battleWin.EscapeButton.Activated)) do
-                        c:Fire()
-                    end
-                end)
-            end
-        end
     end
 
-    -- Island Progression Auto Farm Loop
+    -- Island Progression Auto Farm Loop (Teleport & Actively Engage Battle)
     local now = os.clock()
-    if HubState.IslandAutoFarm and not inBattle and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
+    if HubState.IslandAutoFarm and not currentCombat and (now - HubState.LastFarmTeleport >= HubState.FarmDelay) then
+        if HubState.AutoDismissPopups then
+            DismissBlockingWindows()
+        end
+
         HubState.LastFarmTeleport = now
         local curIsland = IslandData[HubState.CurrentIslandIndex]
         if curIsland then
-            -- If this is the boss island, teleport to boss anchor
+            -- World Boss Island
             if curIsland.id == 99 then
                 TeleportTo(curIsland.pos)
+                task.delay(0.2, function()
+                    pcall(function()
+                        if BattleService and BattleService.reportEnterBossBattle then
+                            BattleService.reportEnterBossBattle(1)
+                        end
+                    end)
+                end)
             else
-                -- Find wild Evomons near this island
+                -- Wild Evomon on current island
                 local islandEvomons = GetCreaturesNearPos(curIsland.pos, HubState.FarmRadius)
                 if #islandEvomons > 0 then
                     local target = islandEvomons[1]
                     TeleportTo(target.cframe)
+                    -- Actively initiate battle with the target creature!
+                    task.delay(0.18, function()
+                        if not IsInBattle() and BattleService and BattleService.enterPetBattle then
+                            pcall(function()
+                                BattleService.enterPetBattle(tostring(target.uid))
+                            end)
+                        end
+                    end)
                 else
-                    -- No creatures in radius, move to island center or advance
+                    -- Move to island center if none in immediate range
                     TeleportTo(curIsland.pos)
                 end
             end
@@ -926,7 +1152,7 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
     end
 end))
 
--- Periodic Radar & ESP Updater (every 1.5 seconds)
+-- Periodic Radar, ESP & Background Leveling Updater (every 1.5 seconds)
 task.spawn(function()
     while HubState.Running do
         pcall(function()
@@ -1009,6 +1235,21 @@ task.spawn(function()
                 end
             end
 
+            -- Background Level Breakthrough & Reward checks
+            local now = os.clock()
+            if (now - HubState.LastPeriodicCheck) >= 4.0 then
+                HubState.LastPeriodicCheck = now
+                if HubState.AutoLevelBreakthrough then
+                    TriggerLevelBreakthrough()
+                end
+                if HubState.AutoClaimLevelRewards then
+                    TriggerClaimLevelRewards()
+                end
+                if HubState.AutoDismissPopups and not IsInBattle() then
+                    DismissBlockingWindows()
+                end
+            end
+
             -- Update UI Dashboards
             local creatures = FetchWildCreatures()
             local closest = HubState.ClosestEvomon
@@ -1021,7 +1262,7 @@ task.spawn(function()
                 ))
             end
 
-            local farmStatus = HubState.IslandAutoFarm and "🟢 Active (Farming)" or "⚪ Idle"
+            local farmStatus = HubState.IslandAutoFarm and "🟢 Active (Farming & Fighting)" or "⚪ Idle"
             FarmStatusPara:SetDesc(string.format(
                 "Status: %s\n🏝️ Island: %s\n🎯 Progress: %d / %d Evomons\n👑 Next Boss: World Boss Island",
                 farmStatus,
@@ -1041,16 +1282,29 @@ _G.EvomonHub = {
     ClaimMail = ClaimMail,
     ClaimDaily = ClaimDaily,
     ClearAllESP = ClearAllESP,
+    TriggerLevelBreakthrough = TriggerLevelBreakthrough,
+    TriggerClaimLevelRewards = TriggerClaimLevelRewards,
+    DismissBlockingWindows = DismissBlockingWindows,
     TeleportToClosest = function()
         local list = FetchWildCreatures()
         if list[1] then TeleportTo(list[1].cframe) end
+    end,
+    FightClosest = function()
+        local list = FetchWildCreatures()
+        if list[1] then
+            TeleportTo(list[1].cframe)
+            task.wait(0.2)
+            if BattleService and BattleService.enterPetBattle then
+                BattleService.enterPetBattle(tostring(list[1].uid))
+            end
+        end
     end,
     TeleportTo = TeleportTo
 }
 
 WindUI:Notify({
-    Title = "Evomon Hub Updated!",
-    Content = "Island Progression Farm & Clean ESP are ready!",
+    Title = "Evomon Hub Ready!",
+    Content = "Active Battle Engager, Controlled V-Mode & Auto Leveling are operational!",
     Duration = 4,
     Icon = "sparkles"
 })
