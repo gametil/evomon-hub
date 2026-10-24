@@ -495,6 +495,13 @@ local function ExecuteQuestStep()
         end
 
         if targetCreature then
+            -- Smart Elemental Counter Selection before combat
+            if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter and targetCreature.cfgId then
+                local petCfg = PetConfig and PetConfig[targetCreature.cfgId]
+                if petCfg and petCfg.mainElement then
+                    AlignPetCounter(petCfg.mainElement)
+                end
+            end
             TeleportTo(targetCreature.cframe)
             task.delay(0.2, function()
                 if not IsInBattle() and BattleService and BattleService.enterPetBattle then
@@ -711,6 +718,24 @@ local function ExecuteQuestStep()
 
         -- 3. If target NPC found, teleport directly and challenge!
         if targetNPC and targetNPC.cframe then
+            -- Smart Counter Pet Alignment before NPC battle
+            if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter then
+                local enemyElem = 4 -- Default grass for Olivia
+                pcall(function()
+                    local bpConfig = BattlePoolConfig or (Config and require(Config:FindFirstChild("BattlePoolConfig")))
+                    if bpConfig and battlePoolId and bpConfig[battlePoolId] then
+                        local bp = bpConfig[battlePoolId]
+                        if bp.positionPool and bp.positionPool[1] and bp.positionPool[1][1] then
+                            local pId = bp.positionPool[1][1]
+                            local pCfg = PetConfig and PetConfig[pId]
+                            if pCfg and pCfg.mainElement then
+                                enemyElem = pCfg.mainElement
+                            end
+                        end
+                    end
+                end)
+                AlignPetCounter(enemyElem)
+            end
             TeleportTo(targetNPC.cframe + Vector3.new(0, 0, 3.5))
             task.delay(0.25, function()
                 if IsInBattle() then return end
@@ -1126,6 +1151,49 @@ TabIslandFarm:Dropdown({
                 break
             end
         end
+    end
+})
+
+TabIslandFarm:Section({ Title = "Smart Elemental Battle AI (Counters & Move Optimizer)" })
+
+local CombatAIPara = TabIslandFarm:Paragraph({
+    Title = "Smart Elemental Battle AI",
+    Desc = "Opponent: None (Awaiting Combat)\nCounter Rule: Grass ➔ Fire 🔥 | Rock ➔ Water 💧 | Water ➔ Grass 🌿\nMove Selector: Maximum Super-Effective Damage (2.0x)"
+})
+
+TabIslandFarm:Toggle({
+    Title = "Enable Smart Elemental Battle AI",
+    Desc = "Master toggle: Detects opponent element, equips counter Evomon, and selects the most damaging moves",
+    Value = HubState.SmartCombatAI,
+    Callback = function(state)
+        HubState.SmartCombatAI = state
+    end
+})
+
+TabIslandFarm:Toggle({
+    Title = "Auto Counter Evomon Selection",
+    Desc = "Automatically aligns your starter/main Evomon to counter the opponent's element (Fire vs Grass, Water vs Rock/Fire, Grass vs Water/Rock)",
+    Value = HubState.AutoSwitchPetCounter,
+    Callback = function(state)
+        HubState.AutoSwitchPetCounter = state
+    end
+})
+
+TabIslandFarm:Toggle({
+    Title = "Smart Move Optimizer (Highest Damage / 2.0x)",
+    Desc = "Calculates exact damage multipliers against opponent and casts Super-Effective (2.0x) moves",
+    Value = HubState.AutoPickBestMove,
+    Callback = function(state)
+        HubState.AutoPickBestMove = state
+    end
+})
+
+TabIslandFarm:Toggle({
+    Title = "Auto Cast Ultimate Move",
+    Desc = "Fires your Evomon's Ultimate attack as soon as it is charged and available",
+    Value = HubState.AutoCastUltimate,
+    Callback = function(state)
+        HubState.AutoCastUltimate = state
     end
 })
 
@@ -1656,6 +1724,15 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
         end
     end
 
+    -- In-combat Smart Elemental Move Optimizer
+    if currentCombat and HubState.SmartCombatAI then
+        local nowCombatTime = os.clock()
+        if (nowCombatTime - HubState.LastTurnMoveTime) >= 0.75 then
+            HubState.LastTurnMoveTime = nowCombatTime
+            task.spawn(ExecuteSmartCombatStep)
+        end
+    end
+
     -- Track battle end -> Progression count, level cap breakthrough & claim rewards
     if HubState.LastBattleState == true and currentCombat == false then
         HubState.FarmsOnCurrentIsland = HubState.FarmsOnCurrentIsland + 1
@@ -1757,6 +1834,13 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
                 local islandEvomons = GetCreaturesNearPos(curIsland.pos, HubState.FarmRadius)
                 if #islandEvomons > 0 then
                     local target = islandEvomons[1]
+                    -- Smart Elemental Counter Selection before island combat
+                    if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter and target.cfgId then
+                        local petCfg = PetConfig and PetConfig[target.cfgId]
+                        if petCfg and petCfg.mainElement then
+                            AlignPetCounter(petCfg.mainElement)
+                        end
+                    end
                     TeleportTo(target.cframe)
                     task.delay(0.18, function()
                         if not IsInBattle() and BattleService and BattleService.enterPetBattle then
