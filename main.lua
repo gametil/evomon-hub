@@ -456,10 +456,39 @@ local function ExecuteSmartCombatStep()
     HubState.CurrentEnemyElement = enemy.element
     HubState.CurrentEnemyName = enemy.name
 
+    -- Check if active pet is disadvantaged against current enemy (e.g. Fire vs Water/Fire), and auto-counter switch if needed
+    if HubState.AutoSwitchPetCounter and enemy.element then
+        pcall(function()
+            local ps = require(ReplicatedStorage.Script.Pet.PetService)
+            local mainPetUid = ps.getMainPetUid and tostring(ps.getMainPetUid())
+            local code, petData = ps.getPlayerPetData()
+            local activePet = petData and petData.petList and petData.petList[mainPetUid]
+            local activeCfg = activePet and PetConfig and PetConfig[activePet.configId]
+            local activeElem = activeCfg and activeCfg.elements and activeCfg.elements[1] or 1
+            local currentMult = GetElementMultiplier(activeElem, enemy.element)
+
+            -- If our current pet deals 0.5x or less (resisted, e.g. Fire against Fire or Grass against Fire)
+            if currentMult <= 0.5 then
+                local bestCounter = SelectBestCounterPetForEnemy(enemy.element)
+                if bestCounter and bestCounter.uid and tostring(bestCounter.uid) ~= mainPetUid and bestCounter.multiplier >= 1.5 then
+                    local MBWC = require(ReplicatedStorage.Controller.MainBattleWindowController)
+                    if MBWC and MBWC.applySwitchPet then
+                        MBWC.applySwitchPet(bestCounter.uid)
+                    end
+                    ps.reqSetMainPet(bestCounter.uid)
+                end
+            end
+        end)
+    end
+
     -- 1. Auto Ultimate Burst when charged & ready
     if HubState.AutoCastUltimate and battleWin.UltimateSkillPromptImg and battleWin.UltimateSkillPromptImg.Visible then
         pcall(function()
             if not battleWin._ultimateIsLocked then
+                local MBWC = require(ReplicatedStorage.Controller.MainBattleWindowController)
+                if MBWC and MBWC.triggerUltimateSkill then
+                    MBWC.triggerUltimateSkill()
+                end
                 for _, c in ipairs(getconnections(battleWin.UltimateSkillPromptImg.MouseButton1Click)) do c:Fire() end
                 for _, c in ipairs(getconnections(battleWin.UltimateSkillPromptImg.Activated)) do c:Fire() end
             end
@@ -470,39 +499,59 @@ local function ExecuteSmartCombatStep()
     if HubState.AutoPickBestMove then
         pcall(function()
             local ps = require(ReplicatedStorage.Script.Pet.PetService)
-            local mainPetUid = ps.getMainPetUid and ps.getMainPetUid()
-            local _, petData = pcall(function() return ps.getPetDataByUid and ps.getPetDataByUid(mainPetUid) end)
+            local mainPetUid = ps.getMainPetUid and tostring(ps.getMainPetUid())
+            local code, petData = ps.getPlayerPetData()
+            local activePet = petData and petData.petList and petData.petList[mainPetUid]
+            local skills = activePet and activePet.skillList or {}
 
-            -- Find all skill buttons inside battleWin
-            local skillButtons = {}
-            for _, desc in ipairs(battleWin.instance:GetDescendants()) do
-                if desc:IsA("GuiButton") and desc.Visible and desc.Parent and (string.find(desc.Name:lower(), "skill") or string.find(desc.Parent.Name:lower(), "skill")) then
-                    table.insert(skillButtons, desc)
-                end
-            end
-
-            local skillList = battleWin._skillButtonList or battleWin.SkillButtonList or skillButtons
-            if #skillList > 0 then
-                local bestBtn = skillList[1]
+            if #skills > 0 then
+                local bestSlot = 1
                 local bestScore = -1
+                local bestSkillCfg = nil
 
-                for idx, btn in ipairs(skillList) do
-                    local sId = btn:GetAttribute("SkillId") or (petData and petData.skills and petData.skills[idx] and petData.skills[idx].id)
-                    local sCfg = sId and SkillConfig and SkillConfig[sId]
-                    local sElem = (sCfg and sCfg.element) or 1
-                    local sPower = (sCfg and sCfg.power) or 50
-                    local mult = GetElementMultiplier(sElem, enemy.element)
-                    local score = sPower * mult
+                for idx, s in ipairs(skills) do
+                    local sCfg = SkillConfig and SkillConfig[s.configId]
+                    local power = sCfg and (sCfg.power or sCfg.damage) or 0
+                    local isBuff = sCfg and (sCfg.aiType == "PositiveBuff" or power <= 0)
 
-                    if score > bestScore then
-                        bestScore = score
-                        bestBtn = btn
+                    -- Filter out pure buffs so damage turns aren't wasted
+                    if not isBuff then
+                        local elem = sCfg and sCfg.element or 1
+                        local mult = GetElementMultiplier(elem, enemy.element)
+                        local score = power * mult
+
+                        -- Heavy priority for 2.0x Super-Effective moves (e.g. Cinder vs Grass, Water Gun vs Fire/Rock)
+                        if mult >= 2.0 then
+                            score = score * 100
+                        elseif mult < 1.0 then
+                            score = score * 0.1 -- Strongly penalize resisted moves (e.g. Fire move vs Fire enemy)
+                        end
+
+                        if score > bestScore then
+                            bestScore = score
+                            bestSlot = idx
+                            bestSkillCfg = sCfg
+                        end
                     end
                 end
 
-                if bestBtn then
-                    for _, c in ipairs(getconnections(bestBtn.MouseButton1Click)) do c:Fire() end
-                    for _, c in ipairs(getconnections(bestBtn.Activated)) do c:Fire() end
+                -- Direct Controller execution of the optimal skill slot
+                local MBWC = require(ReplicatedStorage.Controller.MainBattleWindowController)
+                if MBWC and MBWC.triggerNormalSkillBySlotIndex then
+                    MBWC.triggerNormalSkillBySlotIndex(bestSlot)
+                end
+
+                -- GUI fallback: find skill buttons in window and activate the bestSlot button
+                local skillButtons = {}
+                for _, desc in ipairs(battleWin.instance:GetDescendants()) do
+                    if desc:IsA("GuiButton") and desc.Visible and desc.Parent and (string.find(desc.Name:lower(), "skill") or string.find(desc.Parent.Name:lower(), "skill")) then
+                        table.insert(skillButtons, desc)
+                    end
+                end
+                local targetBtn = skillButtons[bestSlot]
+                if targetBtn then
+                    for _, c in ipairs(getconnections(targetBtn.MouseButton1Click)) do c:Fire() end
+                    for _, c in ipairs(getconnections(targetBtn.Activated)) do c:Fire() end
                 end
             end
         end)
