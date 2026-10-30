@@ -154,7 +154,7 @@ local HubState = {
     AutoEscapeIfHighLevel = false,
     EscapeLevelThreshold = 100,
     -- Movement & Safety (Anti-Cheat Protection)
-    MovementMode = "Walk", -- "Walk" (Safe Humanoid MoveTo / No TP), "Blink" (Chunk-Hop Blink TP), "Tween" (Smooth Glide), "Teleport" (Instant TP - Risky)
+    MovementMode = "Walk", -- "Walk" (Safe Humanoid MoveTo / No TP - 100% Safe), "Blink" (Chunk-Hop Blink TP), "Tween" (Smooth Glide)
     WalkSpeedBoost = 16, -- Default vanilla 16 walkspeed for 100% legit movement
     ArrivalDistance = 8,
     BlinkChunkSize = 45, -- Max studs per micro-hop (bypasses server delta position checks)
@@ -269,7 +269,7 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
     local dist = (root.Position - targetPos).Magnitude
     if dist <= stopDistance then return true end
 
-    -- Mode 1: Chunk-Hop Blink Teleport (Break large distance into small legit hops)
+    -- Mode 1: Chunk-Hop Blink (Break large distance into small legit hops)
     if HubState.MovementMode == "Blink" then
         local chunkSize = HubState.BlinkChunkSize or 45
         local hopDelay = HubState.BlinkDelay or 0.05
@@ -284,16 +284,7 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
             root.CFrame = CFrame.new(nextPos + Vector3.new(0, 2.5, 0))
             task.wait(hopDelay)
         end
-        -- Post-hop settle delay so server validates player footprint
         task.wait(HubState.PostTpDelay or 0.4)
-        return true
-    end
-
-    -- Mode 2: Instant Teleport (with velocity preservation & post-TP settle delay)
-    if HubState.MovementMode == "Teleport" then
-        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3.2, 0))
-        -- Wait a short tick so physics & server sync finalize before any remote actions
-        task.wait(HubState.PostTpDelay or 0.35)
         return true
     end
 
@@ -422,24 +413,8 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
     return (root.Position - targetPos).Magnitude <= (stopDistance + 6)
 end
 
--- Teleport router: defaults to safe movement unless forceInstant is passed
-local function TeleportTo(cf, forceInstant)
-    if forceInstant or HubState.MovementMode == "Teleport" or HubState.MovementMode == "Blink" then
-        local targetPos = (typeof(cf) == "CFrame" and cf.Position) or (typeof(cf) == "Vector3" and cf)
-        if not targetPos then return false end
-
-        -- If Blink mode is active, execute multi-chunk micro-hops
-        if HubState.MovementMode == "Blink" and not forceInstant then
-            return SafeMoveTo(cf, HubState.ArrivalDistance or 8)
-        end
-
-        local root = GetRootPart()
-        if root then
-            root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3.2, 0))
-            task.wait(HubState.PostTpDelay or 0.35)
-        end
-        return true
-    end
+-- Safe Movement router: routes all waypoints and travel through SafeMoveTo (Legit Walk by default)
+local function TeleportTo(cf)
     return SafeMoveTo(cf, HubState.ArrivalDistance or 8)
 end
 
@@ -2004,14 +1979,17 @@ TabRewards:Button({
 -- TAB 5: WORLD TELEPORTS
 -- ===================================================
 
-TabTeleports:Section({ Title = "Island Waypoints" })
+TabTeleports:Section({ Title = "Island Waypoints (Safe Walk / Travel)" })
 
 for _, isl in ipairs(IslandData) do
     TabTeleports:Button({
-        Title = "Warp to " .. isl.name,
+        Title = "Walk to " .. isl.name,
         Callback = function()
-            TeleportTo(isl.pos)
-            WindUI:Notify({ Title = "Teleported", Content = "Arrived at " .. isl.name, Duration = 2, Icon = "map-pin" })
+            WindUI:Notify({ Title = "Walking to " .. isl.name, Content = "Navigating safely using legit movement...", Duration = 3, Icon = "footprints" })
+            task.spawn(function()
+                SafeMoveTo(isl.pos, 10, 60)
+                WindUI:Notify({ Title = "Arrived", Content = "Safely arrived at " .. isl.name, Duration = 2.5, Icon = "check" })
+            end)
         end
     })
 end
@@ -2037,8 +2015,8 @@ TabPlayer:Section({ Title = "Safe Movement & Anti-Detection" })
 
 TabPlayer:Dropdown({
     Title = "Movement Mode",
-    Desc = "Legit Walk is safest. Chunk-Hop Blink makes fast movement undetectable by breaking TPs into small hops.",
-    Values = { "Legit Walk (Safest - No TP)", "Chunk-Hop Blink (Fast & Safe)", "Smooth Glide (Tween)", "Instant TP (Direct)" },
+    Desc = "Legit Walk is 100% safe (uses character controller). Chunk-Hop Blink breaks travel into small safe hops.",
+    Values = { "Legit Walk (Safest - No TP)", "Chunk-Hop Blink (Fast & Safe)", "Smooth Glide (Tween)" },
     Value = "Legit Walk (Safest - No TP)",
     Callback = function(val)
         if string.find(val, "Walk") then
@@ -2048,7 +2026,7 @@ TabPlayer:Dropdown({
         elseif string.find(val, "Glide") or string.find(val, "Tween") then
             HubState.MovementMode = "Tween"
         else
-            HubState.MovementMode = "Teleport"
+            HubState.MovementMode = "Walk"
         end
     end
 })
