@@ -1026,7 +1026,7 @@ local function ExecuteQuestStep()
         if bossTarget then
             -- Pebgolem is Rock/Ground (Element 5/8) -> Align Water (Clampip) or Grass (Budling)
             if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter then
-                AlignPetCounter(5) -- Counter Rock
+                AlignPetCounter(9) -- Counter Rock (Element 9 in Evomon ElementTypeConfig)
             end
 
             -- Safe walk to boss
