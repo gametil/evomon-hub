@@ -2470,15 +2470,8 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
 
     -- Track battle start -> Handle Auto Battle vs Smart Combat
     if HubState.LastBattleState == false and currentCombat == true then
-        if HubState.SmartCombatAI then
-            -- Disable game server's default dumb Auto Battle so it does NOT hijack turns with Slot 1 (Ram)
-            SetAutoBattleState(false)
-        elseif HubState.AutoBattle then
-            task.spawn(function()
-                task.wait(0.25)
-                SetAutoBattleState(true)
-            end)
-        end
+        -- Enable native Auto-Battle on combat start to ensure server rounds execute seamlessly
+        SetAutoBattleState(true)
         if HubState.AutoQuest then
             pcall(function()
                 local bc = require(ReplicatedStorage.Controller.BattleCatchPetWindowController)
