@@ -899,8 +899,7 @@ local function GetCurrentQuestInfo()
                                 end
                                 if taskName == "No Active Quest" or string.find(taskName, "Task") or taskName == "" or string.find(txt, "King") or string.find(txt, "Defeat") then
                                     local cleaned = txt:gsub("%s*%(%d+/%d+%)%s*$", "")
-                                    cleaned = cleaned:gsub("[
-]+", " "):gsub("%s+", " ")
+                                    cleaned = cleaned:gsub("%%c+", " "):gsub("%%s+", " ")
                                     taskName = cleaned
                                 end
                                 if pMatch then
