@@ -1527,14 +1527,27 @@ local function ExecuteQuestStep()
 end
 
 local ActiveCodes = {
+    "EVOS3MIDUPDATE",
+    "EVOMONSEASON3",
+    "Wmidseason",
+    "SEASON2GO",
     "240evoRISE",
+    "100DCUNITY",
     "EVO120HYPE",
+    "D50CREW",
     "EVO60SPARK",
+    "SeasonComing",
+    "20KMEMBERS",
     "30K-LIKES",
     "20000LIKES",
+    "YTBgift",
+    "FORGROUP",
+    "12klikeS",
+    "10KCCU_",
+    "10kthx",
+    "5000DC",
     "THXFOR5K",
-    "2K-LIKES",
-    "12klikes"
+    "2K-LIKES"
 }
 
 -- Redeem a code
@@ -2131,8 +2144,8 @@ TabRadar:Button({
 TabRewards:Section({ Title = "One-Click Promo Code Redemption" })
 
 TabRewards:Button({
-    Title = "Redeem ALL Active Codes (8 Codes)",
-    Desc = "Batch redeems: 240evoRISE, EVO120HYPE, EVO60SPARK, 30K-LIKES, 20000LIKES, THXFOR5K, 2K-LIKES",
+    Title = "Redeem ALL Active Codes (21 Verified Codes)",
+    Desc = "Batch redeems all 21 current promo codes (Tickets, Potions, Coins & EXP fruits)",
     Callback = function()
         WindUI:Notify({ Title = "Redeeming Codes...", Content = "Processing all promo codes...", Duration = 2, Icon = "loader" })
         local count = RedeemAllCodes()
