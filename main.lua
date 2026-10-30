@@ -1251,8 +1251,8 @@ local function ExecuteQuestStep()
             end
         end
 
-        -- Fallback to closest wild creature if general catch/defeat
-        if not targetCreature and #allCreatures > 0 then
+        -- Only fallback to generic wild creatures if the quest has NO specific target species
+        if not targetCreature and (not targetCfgId and not quest.targetCreatureName) and #allCreatures > 0 then
             targetCreature = allCreatures[1]
         end
 
