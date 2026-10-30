@@ -132,6 +132,10 @@ local HubState = {
     AutoQuestClaim = true,
     QuestStepDelay = 1.8,
     LastQuestStep = 0,
+    AutoChallengeBoss = true, -- Auto detect and challenge Island King/Bosses (e.g. Pebgolem King in Verdant Valley)
+    AutoNavigateToQuestIsland = true, -- Auto travel to quest-required island if outside current territory
+    CurrentQuestObjective = "None",
+    CurrentQuestIsland = "None",
     -- Island Progression Auto Farm
     IslandAutoFarm = false,
     CurrentIslandIndex = 1,
@@ -856,6 +860,37 @@ local function GetCurrentQuestInfo()
     local isClaimable = (taskDerived and taskDerived.isClaimable) or false
     local isCompleted = (taskDerived and taskDerived.isCompleted) or false
 
+    -- Screen HUD Reading Fallback: directly reads the on-screen Quest HUD (e.g. "Defeat the Pebgolem King in Verdant Valley (0/1)")
+    pcall(function()
+        local lp = LocalPlayer
+        local pgui = lp and lp:FindFirstChild("PlayerGui")
+        if pgui then
+            for _, gui in ipairs(pgui:GetChildren()) do
+                if gui:IsA("ScreenGui") and gui.Enabled then
+                    for _, desc in ipairs(gui:GetDescendants()) do
+                        if desc:IsA("TextLabel") and desc.Visible and desc.Text ~= "" then
+                            local txt = desc.Text
+                            if string.find(txt, "Defeat") or string.find(txt, "Catch") or string.find(txt, "King") or string.find(txt, "%(%d+/%d+%)") then
+                                local pMatch = txt:match("%((%d+/%d+)%)")
+                                if pMatch then
+                                    if progressText == "" then progressText = pMatch end
+                                    if taskName == "No Active Quest" or string.find(taskName, "Task") then
+                                        taskName = txt:gsub("%s*%(%d+/%d+%)%s*$", "")
+                                    end
+                                    local cur, max = pMatch:match("(%d+)/(%d+)")
+                                    if cur and max and tonumber(cur) >= tonumber(max) and tonumber(max) > 0 then
+                                        isCompleted = true
+                                        isClaimable = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
     local goalInfo = nil
     pcall(function()
         local gCfg = GoalConfig or require(ReplicatedStorage.Config.GoalConfig)
@@ -867,6 +902,28 @@ local function GetCurrentQuestInfo()
         end
     end)
 
+    -- Detect target Island from quest name (e.g. "Verdant Valley" -> Island 1)
+    local targetIsland = nil
+    for _, isl in ipairs(IslandData) do
+        local cleanName = isl.name:match("%((.+)%)") or isl.name
+        if string.find(taskName:lower(), cleanName:lower()) then
+            targetIsland = isl
+            break
+        end
+    end
+
+    -- Detect Boss / King / Special Target
+    local isBossTask = false
+    local bossName = nil
+    if string.find(taskName:lower(), "king") or string.find(taskName:lower(), "boss") or string.find(taskName:lower(), "pebgolem") then
+        isBossTask = true
+        bossName = taskName:match("Defeat%s+the%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("([%a%s]+)%s+in") or "Boss"
+        bossName = bossName:gsub("^%s*(.-)%s*$", "%1")
+    end
+
+    HubState.CurrentQuestObjective = taskName
+    HubState.CurrentQuestIsland = targetIsland and targetIsland.name or "Current"
+
     return {
         taskId = taskId,
         name = taskName,
@@ -875,7 +932,10 @@ local function GetCurrentQuestInfo()
         isCompleted = isCompleted,
         mainTask = mainTask,
         taskDerived = taskDerived,
-        goal = goalInfo
+        goal = goalInfo,
+        targetIsland = targetIsland,
+        isBossTask = isBossTask,
+        bossName = bossName
     }
 end
 
@@ -913,6 +973,116 @@ local function ExecuteQuestStep()
     local gType = quest.goal and quest.goal.type
     local gParams = quest.goal and quest.goal.params
     local allCreatures = FetchWildCreatures()
+
+    -- ========================================================
+    -- INTELLIGENT BOSS / KING QUEST SOLVER
+    -- Handles quests like: "Defeat the Pebgolem King in Verdant Valley (0/1)"
+    -- ========================================================
+    if quest.isBossTask or (quest.name and (string.find(quest.name:lower(), "king") or string.find(quest.name:lower(), "pebgolem"))) then
+        local bossTarget = nil
+        local searchName = quest.bossName or "Pebgolem"
+        local searchLower = searchName:lower()
+
+        -- 1. Search in live creatures list
+        for _, c in ipairs(allCreatures) do
+            if string.find(c.name:lower(), searchLower) or (string.find(c.name:lower(), "king") and string.find(c.name:lower(), "pebgolem")) then
+                bossTarget = c
+                break
+            end
+        end
+
+        -- 2. Search live workspace models (Scene.Island, RuntimeCache, Scene.FunctionModel, workspace)
+        if not bossTarget then
+            local candidateFolders = {
+                workspace:FindFirstChild("Scene"),
+                workspace:FindFirstChild("RuntimeCache"),
+                workspace:FindFirstChild("Monsters"),
+                workspace:FindFirstChild("NPC"),
+                workspace
+            }
+            for _, folder in ipairs(candidateFolders) do
+                if folder and not bossTarget then
+                    for _, model in ipairs(folder:GetChildren()) do
+                        local mName = model.Name:lower()
+                        if string.find(mName, "pebgolem") or string.find(mName, "king") or (string.find(mName, "boss") and string.find(mName, "1")) then
+                            local root = model:FindFirstChild("HumanoidRootPart", true) or model:FindFirstChildWhichIsA("BasePart", true)
+                            if root then
+                                bossTarget = {
+                                    uid = model.Name,
+                                    cframe = root.CFrame,
+                                    position = root.Position,
+                                    name = model.Name,
+                                    modelInstance = model
+                                }
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        -- 3. If Boss Target Found: Counter Align, Walk up, and Engage
+        if bossTarget then
+            -- Pebgolem is Rock/Ground (Element 5/8) -> Align Water (Clampip) or Grass (Budling)
+            if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter then
+                AlignPetCounter(5) -- Counter Rock
+            end
+
+            -- Safe walk to boss
+            SafeMoveTo(bossTarget.cframe, 12, 20)
+            task.wait(HubState.PostTpDelay or 0.4)
+
+            if not IsInBattle() then
+                -- Method A: Official BattleService enterPetBattle
+                pcall(function()
+                    if BattleService and BattleService.enterPetBattle then
+                        BattleService.enterPetBattle(tostring(bossTarget.uid))
+                    end
+                end)
+                -- Method B: Official enterActualNpcBattle / enterNpcBattle
+                pcall(function()
+                    if BattleService and BattleService.enterActualNpcBattle then
+                        local ps = require(ReplicatedStorage.Script.Pet.PetService)
+                        local mainPet = ps and ps.getMainPetUid and tostring(ps.getMainPetUid())
+                        if mainPet then
+                            BattleService.enterActualNpcBattle(1001, 11000001, mainPet)
+                        end
+                    end
+                end)
+                pcall(function()
+                    if BattleService and BattleService.reportEnterBossBattle then
+                        BattleService.reportEnterBossBattle(1)
+                    end
+                end)
+                -- Method C: ProximityPrompt triggering on boss model
+                pcall(function()
+                    local m = bossTarget.modelInstance or (bossTarget.uid and workspace:FindFirstChild(tostring(bossTarget.uid), true))
+                    if m then
+                        for _, prompt in ipairs(m:GetDescendants()) do
+                            if prompt:IsA("ProximityPrompt") then
+                                prompt.HoldDuration = 0
+                                prompt.RequiresLineOfSight = false
+                                if fireproximityprompt then fireproximityprompt(prompt) end
+                                for _, c in ipairs(getconnections(prompt.Triggered)) do c:Fire() end
+                            end
+                        end
+                    end
+                end)
+            end
+            return
+        else
+            -- 4. If boss not on current island, navigate to the target island (e.g. Verdant Valley)
+            if quest.targetIsland and HubState.AutoNavigateToQuestIsland then
+                local myPos = GetRootPart() and GetRootPart().Position or Vector3.zero
+                local distToIsland = (myPos - quest.targetIsland.pos).Magnitude
+                if distToIsland > 400 then
+                    SafeMoveTo(quest.targetIsland.pos, 15, 30)
+                    return
+                end
+            end
+        end
+    end
 
     -- Goal Type 4 or 5: Catch / Defeat specific Evomon
     if gType == 4 or gType == 5 then
@@ -1460,6 +1630,24 @@ TabQuest:Toggle({
     Value = true,
     Callback = function(state)
         HubState.AutoQuestClaim = state
+    end
+})
+
+TabQuest:Toggle({
+    Title = "Auto Defeat Island Bosses & Kings",
+    Desc = "Detects boss/king objectives (e.g. Pebgolem King, Island Bosses), paths directly to their arena, and initiates combat",
+    Value = true,
+    Callback = function(state)
+        HubState.AutoChallengeBoss = state
+    end
+})
+
+TabQuest:Toggle({
+    Title = "Auto Island Travel for Quests",
+    Desc = "Automatically navigates to whichever island your active quest requires (e.g. Verdant Valley, Lava Crag)",
+    Value = true,
+    Callback = function(state)
+        HubState.AutoNavigateToQuestIsland = state
     end
 })
 
@@ -2473,16 +2661,20 @@ task.spawn(function()
 
             -- Update Live Quest Status
             local qInfo = GetCurrentQuestInfo()
-            if qInfo and qInfo.taskId then
-                local statusStr = HubState.AutoQuest and "🟢 Active (Completing Quest)" or "⚪ Idle"
-                local claimStr = (qInfo.isClaimable or qInfo.isCompleted) and "🎁 READY TO CLAIM!" or "⏳ In Progress"
+            if qInfo and (qInfo.taskId or qInfo.name ~= "No Active Quest") then
+                local statusStr = HubState.AutoQuest and "Active (Completing Quest)" or "Idle"
+                local claimStr = (qInfo.isClaimable or qInfo.isCompleted) and "READY TO CLAIM!" or "In Progress"
+                local targetIsl = qInfo.targetIsland and qInfo.targetIsland.name or "Current Island"
+                local bossStr = qInfo.isBossTask and ("Boss Target: " .. (qInfo.bossName or "King")) or "Standard Objective"
                 QuestStatusPara:SetDesc(string.format(
-                    "Status: %s\n📜 Quest: %s\n🎯 Progress: %s\n✨ State: %s\n🆔 Task ID: %d",
+                    "Status: %s\nQuest: %s\nProgress: %s\nTarget Island: %s\nType: %s\nState: %s\nTask ID: %s",
                     statusStr,
                     qInfo.name,
-                    qInfo.progress ~= "" and qInfo.progress or "Tracking",
+                    qInfo.progress ~= "" and qInfo.progress or "Tracking (0/1)",
+                    targetIsl,
+                    bossStr,
                     claimStr,
-                    qInfo.taskId
+                    tostring(qInfo.taskId or "Active")
                 ))
             end
 
