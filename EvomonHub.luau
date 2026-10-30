@@ -113,7 +113,7 @@ local IslandData = {
     {id = 4, name = "Island 4 (Amber Acres)", pos = Vector3.new(11078, 637, -4550)},
     {id = 5, name = "Island 5 (Autumn Hill)", pos = Vector3.new(11830, 523, -5963)},
     {id = 6, name = "Island 6 (Shiver Snows)", pos = Vector3.new(11480, 699, -7730)},
-    {id = 7, name = "Island 7 (Raven Ridge)", pos = Vector3.new(14281, 478, -8823)},
+    {id = 7, name = "Island 7 (Raven Ridge)", pos = Vector3.new(14530, 591, -8818)},
     {id = 8, name = "Island 8 (Silent Sands)", pos = Vector3.new(16357, 551, -9046)},
     {id = 9, name = "Island 9 (Crystal Cascade)", pos = Vector3.new(17665, 565, -7634)},
     {id = 10, name = "Island 10 (Dusk Town)", pos = Vector3.new(19353, 645, -7567)},
