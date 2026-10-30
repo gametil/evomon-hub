@@ -171,11 +171,11 @@ local HubState = {
     ESPObjects = {},
     -- Player Mods
     SpeedEnabled = false,
-    CustomSpeed = 24,
+    CustomSpeed = 16,
     JumpEnabled = false,
-    CustomJump = 60,
-    InfJump = false,
-    NoClip = false,
+    CustomJump = 50,
+    InfJump = false, -- Disabled: High detection risk
+    NoClip = false, -- Disabled: High detection risk
     AntiAFK = true,
     -- Internals
     Connections = {},
@@ -2255,10 +2255,11 @@ TabPlayer:Slider({
     end
 })
 
-TabPlayer:Section({ Title = "Character Modifiers" })
+TabPlayer:Section({ Title = "Character Modifiers (Safe Limits)" })
 
 TabPlayer:Toggle({
-    Title = "Enable Custom WalkSpeed",
+    Title = "Enable Safe WalkSpeed Boost",
+    Desc = "Caps speed within legitimate network limits (16 - 28)",
     Value = false,
     Callback = function(state)
         HubState.SpeedEnabled = state
@@ -2269,59 +2270,20 @@ TabPlayer:Toggle({
 })
 
 TabPlayer:Slider({
-    Title = "WalkSpeed",
-    Value = { Min = 16, Max = 150, Default = 24 },
-    Step = 2,
+    Title = "WalkSpeed (Safe Cap: 28)",
+    Value = { Min = 16, Max = 28, Default = 16 },
+    Step = 1,
     Callback = function(val)
-        HubState.CustomSpeed = val
+        HubState.CustomSpeed = math.clamp(val, 16, 28)
         if HubState.SpeedEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-            LocalPlayer.Character.Humanoid.WalkSpeed = val
+            LocalPlayer.Character.Humanoid.WalkSpeed = HubState.CustomSpeed
         end
-    end
-})
-
-TabPlayer:Toggle({
-    Title = "Enable Custom JumpPower",
-    Value = false,
-    Callback = function(state)
-        HubState.JumpEnabled = state
-        if not state and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-            LocalPlayer.Character.Humanoid.JumpPower = 50
-        end
-    end
-})
-
-TabPlayer:Slider({
-    Title = "JumpPower",
-    Value = { Min = 50, Max = 250, Default = 60 },
-    Step = 5,
-    Callback = function(val)
-        HubState.CustomJump = val
-        if HubState.JumpEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-            LocalPlayer.Character.Humanoid.UseJumpPower = true
-            LocalPlayer.Character.Humanoid.JumpPower = val
-        end
-    end
-})
-
-TabPlayer:Toggle({
-    Title = "Infinite Jump",
-    Value = false,
-    Callback = function(state)
-        HubState.InfJump = state
-    end
-})
-
-TabPlayer:Toggle({
-    Title = "NoClip",
-    Value = false,
-    Callback = function(state)
-        HubState.NoClip = state
     end
 })
 
 TabPlayer:Toggle({
     Title = "Anti-AFK Protection",
+    Desc = "Sends native engine key event to prevent idle disconnect without detection",
     Value = true,
     Callback = function(state)
         HubState.AntiAFK = state
@@ -2365,12 +2327,7 @@ table.insert(HubState.Connections, LocalPlayer.Idled:Connect(function()
     end
 end))
 
--- Infinite Jump Listener
-table.insert(HubState.Connections, UserInputService.JumpRequest:Connect(function()
-    if HubState.InfJump and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-        LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-    end
-end))
+-- Infinite Jump removed for account safety
 
 -- Character Respawn Handler
 table.insert(HubState.Connections, LocalPlayer.CharacterAdded:Connect(function(newChar)
@@ -2398,14 +2355,7 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- NoClip
-    if HubState.NoClip and Character then
-        for _, part in ipairs(Character:GetDescendants()) do
-            if part:IsA("BasePart") and part.CanCollide then
-                part.CanCollide = false
-            end
-        end
-    end
+-- NoClip removed for account safety
 
     -- Battle Status & Tracking
     local inBattle, battleWin = IsInBattle()
