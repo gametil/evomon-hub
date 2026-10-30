@@ -254,6 +254,29 @@ local function GetHumanoid()
     return char and char:FindFirstChildOfClass("Humanoid")
 end
 
+-- Check if a specific window is open in UIManager
+local function IsWindowOpen(name)
+    local open = UIManager:getOpenedUIWindowList()
+    for _, w in ipairs(open or {}) do
+        if w.name == name then
+            return true, w
+        end
+    end
+    return false, nil
+end
+
+-- Check if currently in battle
+local function IsInBattle()
+    local open, bw = IsWindowOpen("MainBattleWindow")
+    if open then
+        return true, bw
+    end
+    if BattleService and BattleService.hasActiveBattleSession and BattleService.hasActiveBattleSession() then
+        return true, nil
+    end
+    return false, nil
+end
+
 -- Safe Movement Engine: Walks smoothly using Humanoid:MoveTo / Pathfinding to completely eliminate TP detection risks
 local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
     stopDistance = stopDistance or HubState.ArrivalDistance or 8
@@ -444,28 +467,9 @@ local function TeleportTo(cf)
     return SafeMoveTo(cf, HubState.ArrivalDistance or 8)
 end
 
--- Check if a specific window is open in UIManager
-local function IsWindowOpen(name)
-    local open = UIManager:getOpenedUIWindowList()
-    for _, w in ipairs(open or {}) do
-        if w.name == name then
-            return true, w
-        end
-    end
-    return false, nil
-end
+-- [moved above SafeMoveTo]
 
--- Check if currently in battle
-local function IsInBattle()
-    local open, bw = IsWindowOpen("MainBattleWindow")
-    if open then
-        return true, bw
-    end
-    if BattleService and BattleService.hasActiveBattleSession and BattleService.hasActiveBattleSession() then
-        return true, nil
-    end
-    return false, nil
-end
+-- [moved above SafeMoveTo]
 
 -- Safely set in-game Auto Battle ('V' button) without spamming
 local function SetAutoBattleState(enable)
