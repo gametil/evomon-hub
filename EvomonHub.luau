@@ -1169,7 +1169,7 @@ local function ExecuteQuestStep()
                             if prompt:IsA("ProximityPrompt") then
                                 prompt.HoldDuration = 0
                                 prompt.RequiresLineOfSight = false
-                                if fireproximityprompt then fireproximityprompt(prompt) end
+                                -- fireproximityprompt removed for detection safety
                                 for _, c in ipairs(getconnections(prompt.Triggered)) do c:Fire() end
                                 for _, c in ipairs(getconnections(prompt.PromptButtonHoldBegan)) do c:Fire() end
                             end
@@ -1431,7 +1431,7 @@ local function ExecuteQuestStep()
                     if p:IsA("ProximityPrompt") then
                         p.HoldDuration = 0
                         p.RequiresLineOfSight = false
-                        if fireproximityprompt then fireproximityprompt(p) end
+                        -- fireproximityprompt removed for detection safety
                         for _, c in ipairs(getconnections(p.Triggered)) do c:Fire() end
                     end
                 end
