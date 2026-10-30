@@ -868,7 +868,7 @@ local function GetCurrentQuestInfo()
     local isClaimable = (taskDerived and taskDerived.isClaimable) or false
     local isCompleted = (taskDerived and taskDerived.isCompleted) or false
 
-    -- Screen HUD Reading Fallback: directly reads the on-screen Quest HUD (e.g. "Defeat the Pebgolem King in Verdant Valley (0/1)")
+    -- Universal Screen HUD Quest Reader
     pcall(function()
         local lp = LocalPlayer
         local pgui = lp and lp:FindFirstChild("PlayerGui")
@@ -878,13 +878,16 @@ local function GetCurrentQuestInfo()
                     for _, desc in ipairs(gui:GetDescendants()) do
                         if desc:IsA("TextLabel") and desc.Visible and desc.Text ~= "" then
                             local txt = desc.Text
-                            if string.find(txt, "Defeat") or string.find(txt, "Catch") or string.find(txt, "King") or string.find(txt, "%(%d+/%d+%)") then
-                                local pMatch = txt:match("%((%d+/%d+)%)")
+                            -- Matches directives like (0/1), (1/3), Defeat, Catch, Reach, Talk, Arrive, etc.
+                            local pMatch = txt:match("%((%d+/%d+)%)")
+                            if pMatch or string.find(txt, "Defeat") or string.find(txt, "Catch") or string.find(txt, "King") or string.find(txt, "Reach") or string.find(txt, "Feed") or string.find(txt, "Evolve") or string.find(txt, "Talk") then
+                                if pMatch and progressText == "" then
+                                    progressText = pMatch
+                                end
+                                if taskName == "No Active Quest" or string.find(taskName, "Task") or taskName == "" then
+                                    taskName = txt:gsub("%s*%(%d+/%d+%)%s*$", "")
+                                end
                                 if pMatch then
-                                    if progressText == "" then progressText = pMatch end
-                                    if taskName == "No Active Quest" or string.find(taskName, "Task") then
-                                        taskName = txt:gsub("%s*%(%d+/%d+%)%s*$", "")
-                                    end
                                     local cur, max = pMatch:match("(%d+)/(%d+)")
                                     if cur and max and tonumber(cur) >= tonumber(max) and tonumber(max) > 0 then
                                         isCompleted = true
@@ -910,7 +913,7 @@ local function GetCurrentQuestInfo()
         end
     end)
 
-    -- Detect target Island from quest name (e.g. "Verdant Valley" -> Island 1)
+    -- Detect target Island from quest name (e.g. "Verdant Valley" -> Island 1, "Amber Acres" -> Island 4)
     local targetIsland = nil
     for _, isl in ipairs(IslandData) do
         local cleanName = isl.name:match("%((.+)%)") or isl.name
@@ -920,13 +923,42 @@ local function GetCurrentQuestInfo()
         end
     end
 
-    -- Detect Boss / King / Special Target
+    -- Intelligent Quest Category Classifier
+    local taskLower = taskName:lower()
     local isBossTask = false
     local bossName = nil
-    if string.find(taskName:lower(), "king") or string.find(taskName:lower(), "boss") or string.find(taskName:lower(), "pebgolem") then
+    local isCatchTask = false
+    local isLevelTask = false
+    local isDialogueTask = false
+    local isArriveTask = false
+    local isFeedTask = false
+    local isEvolveTask = false
+    local targetNpcName = nil
+    local targetCreatureName = nil
+
+    if string.find(taskLower, "king") or string.find(taskLower, "boss") or string.find(taskLower, "pebgolem") then
         isBossTask = true
         bossName = taskName:match("Defeat%s+the%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("([%a%s]+)%s+in") or "Boss"
-        bossName = bossName:gsub("^%s*(.-)%s*$", "%1")
+        bossName = bossName:gsub("^%s*(.-)%s*$", "")
+    elseif string.find(taskLower, "catch") or string.find(taskLower, "capture") then
+        isCatchTask = true
+        targetCreatureName = taskName:match("Catch%s+a%s+([%a%s]+)%s+in") or taskName:match("Catch%s+([%a%s]+)%s+in") or taskName:match("Catch%s+([%a%s]+)")
+        if targetCreatureName then targetCreatureName = targetCreatureName:gsub("^%s*(.-)%s*$", "") end
+    elseif string.find(taskLower, "talk") or string.find(taskLower, "speak") or string.find(taskLower, "meet") then
+        isDialogueTask = true
+        targetNpcName = taskName:match("Talk%s+to%s+([%a%s]+)") or taskName:match("Speak%s+with%s+([%a%s]+)")
+        if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "") end
+    elseif string.find(taskLower, "defeat") or string.find(taskLower, "beat") or string.find(taskLower, "battle") then
+        targetNpcName = taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)")
+        if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "") end
+    elseif string.find(taskLower, "level") or string.find(taskLower, "reach") or string.find(taskLower, "lv") then
+        isLevelTask = true
+    elseif string.find(taskLower, "feed") then
+        isFeedTask = true
+    elseif string.find(taskLower, "evolve") or string.find(taskLower, "evolution") or string.find(taskLower, "breakthrough") then
+        isEvolveTask = true
+    elseif string.find(taskLower, "arrive") or string.find(taskLower, "travel") or string.find(taskLower, "explore") then
+        isArriveTask = true
     end
 
     HubState.CurrentQuestObjective = taskName
@@ -943,7 +975,15 @@ local function GetCurrentQuestInfo()
         goal = goalInfo,
         targetIsland = targetIsland,
         isBossTask = isBossTask,
-        bossName = bossName
+        bossName = bossName,
+        isCatchTask = isCatchTask,
+        isLevelTask = isLevelTask,
+        isDialogueTask = isDialogueTask,
+        isArriveTask = isArriveTask,
+        isFeedTask = isFeedTask,
+        isEvolveTask = isEvolveTask,
+        targetNpcName = targetNpcName,
+        targetCreatureName = targetCreatureName
     }
 end
 
@@ -955,7 +995,7 @@ local function ExecuteQuestStep()
     local quest = GetCurrentQuestInfo()
     if not quest or not quest.taskId then return end
 
-    -- Step 1: If quest is already completed or ready to claim, turn it in immediately!
+    -- Step 1: Instant Auto-Claim if quest is complete
     if quest.isClaimable or quest.isCompleted then
         pcall(function()
             Remote.Task.ReqCompleteTask:InvokeServer(quest.taskId)
@@ -983,15 +1023,14 @@ local function ExecuteQuestStep()
     local allCreatures = FetchWildCreatures()
 
     -- ========================================================
-    -- INTELLIGENT BOSS / KING QUEST SOLVER
-    -- Handles quests like: "Defeat the Pebgolem King in Verdant Valley (0/1)"
+    -- QUEST TYPE 1: BOSS / KING ELIMINATION
     -- ========================================================
     if quest.isBossTask or (quest.name and (string.find(quest.name:lower(), "king") or string.find(quest.name:lower(), "pebgolem"))) then
         local bossTarget = nil
         local searchName = quest.bossName or "Pebgolem"
         local searchLower = searchName:lower()
 
-        -- 1. Search in live creatures list
+        -- 1a. Search in wild creatures list
         for _, c in ipairs(allCreatures) do
             if string.find(c.name:lower(), searchLower) or (string.find(c.name:lower(), "king") and string.find(c.name:lower(), "pebgolem")) then
                 bossTarget = c
@@ -999,9 +1038,8 @@ local function ExecuteQuestStep()
             end
         end
 
-        -- 2. Search live workspace models (Scene.Island, RuntimeCache, Scene.FunctionModel, workspace)
+        -- 1b. Search workspace models recursively
         if not bossTarget then
-            -- 2a. Search through all models in workspace recursively
             local function ScanFolderForBoss(parent)
                 if not parent or bossTarget then return end
                 for _, obj in ipairs(parent:GetChildren()) do
@@ -1029,26 +1067,26 @@ local function ExecuteQuestStep()
             ScanFolderForBoss(workspace:FindFirstChild("Monsters"))
             ScanFolderForBoss(workspace:FindFirstChild("NPC"))
             ScanFolderForBoss(workspace)
+        end
 
-            -- 2b. If not found by name, detect any massive/boss-sized model (> 12 studs height/mass) within 350 studs
-            if not bossTarget then
-                local myRoot = GetRootPart()
-                if myRoot then
-                    for _, obj in ipairs(workspace:GetChildren()) do
-                        if obj:IsA("Model") and obj ~= LocalPlayer.Character then
-                            local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildWhichIsA("BasePart")
-                            if root and (root.Position - myRoot.Position).Magnitude <= 350 then
-                                local size = obj:GetExtentsSize()
-                                if size.Y >= 10 or size.X >= 10 or size.Z >= 10 then
-                                    bossTarget = {
-                                        uid = obj.Name,
-                                        cframe = root.CFrame,
-                                        position = root.Position,
-                                        name = obj.Name,
-                                        modelInstance = obj
-                                    }
-                                    break
-                                end
+        -- 1c. Giant Model Proximity Detection fallback (Massive boss model)
+        if not bossTarget then
+            local myRoot = GetRootPart()
+            if myRoot then
+                for _, obj in ipairs(workspace:GetChildren()) do
+                    if obj:IsA("Model") and obj ~= LocalPlayer.Character then
+                        local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildWhichIsA("BasePart")
+                        if root and (root.Position - myRoot.Position).Magnitude <= 350 then
+                            local size = obj:GetExtentsSize()
+                            if size.Y >= 10 or size.X >= 10 or size.Z >= 10 then
+                                bossTarget = {
+                                    uid = obj.Name,
+                                    cframe = root.CFrame,
+                                    position = root.Position,
+                                    name = obj.Name,
+                                    modelInstance = obj
+                                }
+                                break
                             end
                         end
                     end
@@ -1056,25 +1094,21 @@ local function ExecuteQuestStep()
             end
         end
 
-        -- 3. If Boss Target Found: Counter Align, Walk up, and Engage
+        -- Walk to Boss & Initiate Combat
         if bossTarget then
-            -- Pebgolem is Rock/Ground (Element 5/8) -> Align Water (Clampip) or Grass (Budling)
             if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter then
-                AlignPetCounter(9) -- Counter Rock (Element 9 in Evomon ElementTypeConfig)
+                AlignPetCounter(9) -- Counter Rock / Ground
             end
 
-            -- Safe walk to boss
             SafeMoveTo(bossTarget.cframe, 12, 20)
             task.wait(HubState.PostTpDelay or 0.4)
 
             if not IsInBattle() then
-                -- Method A: Official BattleService enterPetBattle
                 pcall(function()
                     if BattleService and BattleService.enterPetBattle then
                         BattleService.enterPetBattle(tostring(bossTarget.uid))
                     end
                 end)
-                -- Method B: Official enterActualNpcBattle / enterNpcBattle
                 pcall(function()
                     if BattleService and BattleService.enterActualNpcBattle then
                         local ps = require(ReplicatedStorage.Script.Pet.PetService)
@@ -1089,7 +1123,6 @@ local function ExecuteQuestStep()
                         BattleService.reportEnterBossBattle(1)
                     end
                 end)
-                -- Method C: ProximityPrompt triggering on boss model
                 pcall(function()
                     local m = bossTarget.modelInstance or (bossTarget.uid and workspace:FindFirstChild(tostring(bossTarget.uid), true))
                     if m then
@@ -1106,7 +1139,7 @@ local function ExecuteQuestStep()
             end
             return
         else
-            -- 4. If boss not on current island, navigate to the target island (e.g. Verdant Valley)
+            -- Navigate towards Boss Island if on wrong island
             if quest.targetIsland and HubState.AutoNavigateToQuestIsland then
                 local myPos = GetRootPart() and GetRootPart().Position or Vector3.zero
                 local distToIsland = (myPos - quest.targetIsland.pos).Magnitude
@@ -1118,14 +1151,25 @@ local function ExecuteQuestStep()
         end
     end
 
-    -- Goal Type 4 or 5: Catch / Defeat specific Evomon
-    if gType == 4 or gType == 5 then
+    -- ========================================================
+    -- QUEST TYPE 2: CATCH / DEFEAT SPECIFIC OR WILD EVOMON (Goal 4, 5 or Catch Directive)
+    -- ========================================================
+    if gType == 4 or gType == 5 or quest.isCatchTask or string.find(quest.name:lower(), "defeat wild") then
         local targetCfgId = gParams and gParams[1]
         local targetCreature = nil
 
         if targetCfgId then
             for _, c in ipairs(allCreatures) do
                 if c.cfgId == targetCfgId then
+                    targetCreature = c
+                    break
+                end
+            end
+        end
+
+        if not targetCreature and quest.targetCreatureName then
+            for _, c in ipairs(allCreatures) do
+                if string.find(c.name:lower(), quest.targetCreatureName:lower()) then
                     targetCreature = c
                     break
                 end
@@ -1141,15 +1185,19 @@ local function ExecuteQuestStep()
             end
         end
 
+        -- Fallback to closest wild creature if general catch/defeat
+        if not targetCreature and #allCreatures > 0 then
+            targetCreature = allCreatures[1]
+        end
+
         if targetCreature then
-            -- Smart Elemental Counter Selection before combat
             if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter and targetCreature.cfgId then
                 local petCfg = PetConfig and PetConfig[targetCreature.cfgId]
                 if petCfg and petCfg.mainElement then
                     AlignPetCounter(petCfg.mainElement)
                 end
             end
-            TeleportTo(targetCreature.cframe)
+            SafeMoveTo(targetCreature.cframe, 8, 15)
             task.delay(0.2, function()
                 if not IsInBattle() and BattleService and BattleService.enterPetBattle then
                     pcall(function()
@@ -1159,127 +1207,22 @@ local function ExecuteQuestStep()
             end)
             return
         else
-            -- If creature is not currently nearby, warp to the island mentioned in quest title or cycle
-            local warped = false
-            for _, isl in ipairs(IslandData) do
-                local islandCleanName = isl.name:match("%((.+)%)") or isl.name
-                if string.find(quest.name:lower(), islandCleanName:lower()) then
-                    TeleportTo(isl.pos)
-                    warped = true
-                    return
-                end
-            end
-            if not warped then
-                HubState.CurrentIslandIndex = (HubState.CurrentIslandIndex % #IslandData) + 1
-                local nextIsl = IslandData[HubState.CurrentIslandIndex]
-                if nextIsl then
-                    TeleportTo(nextIsl.pos)
-                    return
-                end
+            -- Walk towards target island if needed
+            if quest.targetIsland and HubState.AutoNavigateToQuestIsland then
+                SafeMoveTo(quest.targetIsland.pos, 15, 30)
+                return
             end
         end
 
-    -- Goal Type 40 or 8: Level up Evomon / Reach Level (e.g. Own a Lv.55 Evomon)
-    elseif gType == 40 or gType == 8 then
-        local targetLevel = (gParams and gParams[1]) or 55
-        TriggerLevelBreakthrough()
-
-        -- Try feeding any available EXP fruits from inventory
-        local fed = false
-        pcall(function()
-            local ps = require(ReplicatedStorage.Script.Pet.PetService)
-            local BagService = require(ReplicatedStorage.Script.Bag.BagService)
-            local mainPet = ps.getMainPetUid()
-            local fruitIds = {4000039, 4000023, 4000022, 4000021}
-            for _, fId in ipairs(fruitIds) do
-                local count = BagService.getItemNumById and BagService.getItemNumById(fId)
-                if count and count > 0 then
-                    local r = ps.reqPetAddExpByItems(mainPet, {{id = fId, num = 1}})
-                    if r == 20000 then
-                        fed = true
-                        break
-                    end
-                end
-            end
-        end)
-
-        -- Check if quest completed from feeding
-        local qAfterFeed = GetCurrentQuestInfo()
-        if qAfterFeed and (qAfterFeed.isClaimable or qAfterFeed.isCompleted) then
-            pcall(function()
-                Remote.Task.ReqCompleteTask:InvokeServer(qAfterFeed.taskId)
-            end)
-            DismissBlockingWindows()
-            return
-        end
-
-        -- ACTIVELY GO FIGHT WILD EVOMONS TO GRIND EXP & CATCH HIGH-LEVEL EVOMON!
-        local bestTarget = nil
-        -- 1. Prioritize wild Evomons whose level >= targetLevel (catching one satisfies the quest instantly!)
-        for _, c in ipairs(allCreatures) do
-            if c.level >= targetLevel and c.distance < 1200 then
-                bestTarget = c
-                break
-            end
-        end
-        -- 2. Otherwise find wild Evomon near level 45-60 to gain massive EXP
-        if not bestTarget and #allCreatures > 0 then
-            for _, c in ipairs(allCreatures) do
-                if c.level >= 45 and c.level <= 65 then
-                    bestTarget = c
-                    break
-                end
-            end
-            if not bestTarget then bestTarget = allCreatures[1] end
-        end
-
-        if bestTarget then
-            TeleportTo(bestTarget.cframe)
-            task.delay(0.2, function()
-                if not IsInBattle() and BattleService and BattleService.enterPetBattle then
-                    pcall(function()
-                        BattleService.enterPetBattle(tostring(bestTarget.uid))
-                    end)
-                end
-            end)
-            return
-        end
-
-    -- Goal Type 10: Dialogue / Talk to NPC
-    elseif gType == 10 then
-        local npcId = gParams and gParams[1]
-        for _, isl in ipairs(IslandData) do
-            local islandCleanName = isl.name:match("%((.+)%)") or isl.name
-            if string.find(quest.name:lower(), islandCleanName:lower()) then
-                TeleportTo(isl.pos)
-                break
-            end
-        end
-        if npcId then
-            pcall(function()
-                if Remote:FindFirstChild("Dialogue") then
-                    if Remote.Dialogue:FindFirstChild("ReqReceiveDialogueTask") then
-                        Remote.Dialogue.ReqReceiveDialogueTask:InvokeServer(npcId)
-                    end
-                    if Remote.Dialogue:FindFirstChild("ReqMarkDialogueTalkCompleted") then
-                        Remote.Dialogue.ReqMarkDialogueTalkCompleted:FireServer(npcId)
-                    end
-                    if Remote.Dialogue:FindFirstChild("ReqCompleteDialogueTask") then
-                        Remote.Dialogue.ReqCompleteDialogueTask:InvokeServer(npcId)
-                    end
-                end
-            end)
-        end
-        return
-
-    -- Goal Type 22 or 39: Defeat NPC / Boss Challenge (e.g. Olivia, Island Trainers)
-    elseif gType == 22 or gType == 39 then
+    -- ========================================================
+    -- QUEST TYPE 3: TRAINER / NPC BATTLE (Goal 22, 39 or Defeat NPC Directive)
+    -- ========================================================
+    elseif gType == 22 or gType == 39 or (quest.targetNpcName and not quest.isDialogueTask) then
         local battlePoolId = gParams and gParams[1]
         local trainerId = nil
-        local trainerName = nil
+        local trainerName = quest.targetNpcName
         local trainerModel = nil
 
-        -- Lookup BattlePoolConfig to resolve trainer ID
         pcall(function()
             local bpConfig = BattlePoolConfig or (Config and require(Config:FindFirstChild("BattlePoolConfig")))
             if bpConfig and battlePoolId and bpConfig[battlePoolId] then
@@ -1298,23 +1241,12 @@ local function ExecuteQuestStep()
             local trConfig = BattleTrainerConfig or (Config and require(Config:FindFirstChild("BattleTrainerConfig")))
             if trConfig and trainerId and trConfig[trainerId] then
                 local tr = trConfig[trainerId]
-                trainerName = tr.name
+                trainerName = tr.name or trainerName
                 trainerModel = tr.model
             end
         end)
 
-        -- Fallback: extract NPC name from quest title (e.g. "Defeat Olivia in Amber Acres")
-        if not trainerName and quest.name then
-            local n = quest.name:match("Defeat%s+([%a%s]+)%s+in") or quest.name:match("Defeat%s+([%a%s]+)")
-            if n then
-                trainerName = n:gsub("^%s*(.-)%s*$", "%1")
-            end
-        end
-
-        -- Search for NPC entity in wild creatures or workspace
         local targetNPC = nil
-
-        -- 1. Check allCreatures
         if trainerId or trainerName then
             for _, c in ipairs(allCreatures) do
                 local match = false
@@ -1330,7 +1262,6 @@ local function ExecuteQuestStep()
             end
         end
 
-        -- 2. Search workspace / RuntimeCache directly for the NPC model
         if not targetNPC then
             pcall(function()
                 local cache = workspace:FindFirstChild("RuntimeCache")
@@ -1342,10 +1273,6 @@ local function ExecuteQuestStep()
                         if model.Name == tostring(trainerId) then isMatch = true end
                         if trainerModel and (model.Name == trainerModel or model:FindFirstChild(trainerModel)) then isMatch = true end
                         if trainerName and string.find(model.Name:lower(), trainerName:lower()) then isMatch = true end
-                        for _, sub in ipairs(model:GetChildren()) do
-                            if trainerModel and string.find(sub.Name:lower(), trainerModel:lower()) then isMatch = true end
-                            if trainerName and string.find(sub.Name:lower(), trainerName:lower()) then isMatch = true end
-                        end
                         if isMatch then
                             local root = model:FindFirstChild("HumanoidRootPart", true) or model:FindFirstChildWhichIsA("BasePart", true)
                             if root then
@@ -1363,27 +1290,8 @@ local function ExecuteQuestStep()
             end)
         end
 
-        -- 3. If target NPC found, teleport directly and challenge!
         if targetNPC and targetNPC.cframe then
-            -- Smart Counter Pet Alignment before NPC battle
-            if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter then
-                local enemyElem = 4 -- Default grass for Olivia
-                pcall(function()
-                    local bpConfig = BattlePoolConfig or (Config and require(Config:FindFirstChild("BattlePoolConfig")))
-                    if bpConfig and battlePoolId and bpConfig[battlePoolId] then
-                        local bp = bpConfig[battlePoolId]
-                        if bp.positionPool and bp.positionPool[1] and bp.positionPool[1][1] then
-                            local pId = bp.positionPool[1][1]
-                            local pCfg = PetConfig and PetConfig[pId]
-                            if pCfg and pCfg.mainElement then
-                                enemyElem = pCfg.mainElement
-                            end
-                        end
-                    end
-                end)
-                AlignPetCounter(enemyElem)
-            end
-            TeleportTo(targetNPC.cframe + Vector3.new(0, 0, 3.5))
+            SafeMoveTo(targetNPC.cframe + Vector3.new(0, 0, 3.5), 8, 15)
             task.delay(0.25, function()
                 if IsInBattle() then return end
                 local mainPetUid = nil
@@ -1396,14 +1304,11 @@ local function ExecuteQuestStep()
                 local bId = tonumber(battlePoolId) or 11000004
                 local modelUid = tonumber(targetNPC.uid)
 
-                -- 1. Fire enterActualNpcBattle with official trainerId
                 pcall(function()
                     if BattleService and BattleService.enterActualNpcBattle and mainPetUid then
                         BattleService.enterActualNpcBattle(realTrainerId, bId, mainPetUid)
                     end
                 end)
-
-                -- 2. Fire enterNpcBattle
                 pcall(function()
                     if BattleService and BattleService.enterNpcBattle then
                         BattleService.enterNpcBattle(realTrainerId, bId)
@@ -1412,55 +1317,122 @@ local function ExecuteQuestStep()
                         end
                     end
                 end)
-
-                -- 3. Fire Remotes
                 pcall(function()
                     if Remote and Remote:FindFirstChild("Battle") and Remote.Battle:FindFirstChild("ReqEnterNpcBattle") then
                         if mainPetUid then
                             Remote.Battle.ReqEnterNpcBattle:FireServer(realTrainerId, bId, mainPetUid)
                         end
                         Remote.Battle.ReqEnterNpcBattle:FireServer(realTrainerId, bId)
-                        if modelUid and mainPetUid then
-                            Remote.Battle.ReqEnterNpcBattle:FireServer(modelUid, bId, mainPetUid)
-                        end
-                    end
-                end)
-
-                -- 4. Fire ProximityPrompt on model if present
-                pcall(function()
-                    local m = targetNPC.modelInstance
-                    if not m and workspace:FindFirstChild("RuntimeCache") then
-                        m = workspace.RuntimeCache.RuntimeCacheServer.CreatureModelCache:FindFirstChild(tostring(targetNPC.uid))
-                    end
-                    if m then
-                        for _, desc in ipairs(m:GetDescendants()) do
-                            if desc:IsA("ProximityPrompt") then
-                                desc.HoldDuration = 0
-                                desc.RequiresLineOfSight = false
-                                if fireproximityprompt then
-                                    fireproximityprompt(desc)
-                                end
-                                for _, c in ipairs(getconnections(desc.Triggered)) do c:Fire() end
-                                for _, c in ipairs(getconnections(desc.PromptButtonHoldBegan)) do c:Fire() end
-                            end
-                        end
                     end
                 end)
             end)
             return
         else
-            -- NPC not found on current island: warp to the island mentioned in the quest!
-            for _, isl in ipairs(IslandData) do
-                local islandCleanName = isl.name:match("%((.+)%)") or isl.name
-                if string.find(quest.name:lower(), islandCleanName:lower()) then
-                    TeleportTo(isl.pos)
-                    return
-                end
+            if quest.targetIsland and HubState.AutoNavigateToQuestIsland then
+                SafeMoveTo(quest.targetIsland.pos, 15, 30)
+                return
             end
         end
 
-    -- Goal Type 34: Feed Evomon
-    elseif gType == 34 then
+    -- ========================================================
+    -- QUEST TYPE 4: TALK TO NPC / DIALOGUE (Goal 10 or Dialogue Directive)
+    -- ========================================================
+    elseif gType == 10 or quest.isDialogueTask then
+        local npcId = gParams and gParams[1]
+        local npcTarget = nil
+        local npcName = quest.targetNpcName
+
+        -- Search for NPC model in workspace
+        pcall(function()
+            local npcFolder = workspace:FindFirstChild("NPC") or workspace:FindFirstChild("Scene")
+            if npcFolder then
+                for _, m in ipairs(npcFolder:GetDescendants()) do
+                    if m:IsA("Model") and (m.Name == tostring(npcId) or (npcName and string.find(m.Name:lower(), npcName:lower()))) then
+                        local root = m:FindFirstChild("HumanoidRootPart", true) or m:FindFirstChildWhichIsA("BasePart", true)
+                        if root then
+                            npcTarget = { model = m, cframe = root.CFrame }
+                            break
+                        end
+                    end
+                end
+            end
+        end)
+
+        if npcTarget and npcTarget.cframe then
+            SafeMoveTo(npcTarget.cframe, 8, 15)
+            pcall(function()
+                for _, p in ipairs(npcTarget.model:GetDescendants()) do
+                    if p:IsA("ProximityPrompt") then
+                        p.HoldDuration = 0
+                        p.RequiresLineOfSight = false
+                        if fireproximityprompt then fireproximityprompt(p) end
+                        for _, c in ipairs(getconnections(p.Triggered)) do c:Fire() end
+                    end
+                end
+            end)
+        end
+
+        if npcId then
+            pcall(function()
+                if Remote:FindFirstChild("Dialogue") then
+                    if Remote.Dialogue:FindFirstChild("ReqReceiveDialogueTask") then
+                        Remote.Dialogue.ReqReceiveDialogueTask:InvokeServer(npcId)
+                    end
+                    if Remote.Dialogue:FindFirstChild("ReqMarkDialogueTalkCompleted") then
+                        Remote.Dialogue.ReqMarkDialogueTalkCompleted:FireServer(npcId)
+                    end
+                    if Remote.Dialogue:FindFirstChild("ReqCompleteDialogueTask") then
+                        Remote.Dialogue.ReqCompleteDialogueTask:InvokeServer(npcId)
+                    end
+                end
+            end)
+        end
+        return
+
+    -- ========================================================
+    -- QUEST TYPE 5: LEVEL UP / REACH LEVEL (Goal 40, 8 or Level Directive)
+    -- ========================================================
+    elseif gType == 40 or gType == 8 or quest.isLevelTask then
+        local targetLevel = (gParams and gParams[1]) or 55
+        TriggerLevelBreakthrough()
+
+        -- Auto-feed EXP items
+        pcall(function()
+            local ps = require(ReplicatedStorage.Script.Pet.PetService)
+            local BagService = require(ReplicatedStorage.Script.Bag.BagService)
+            local mainPet = ps.getMainPetUid()
+            local fruitIds = {4000039, 4000023, 4000022, 4000021}
+            for _, fId in ipairs(fruitIds) do
+                local count = BagService.getItemNumById and BagService.getItemNumById(fId)
+                if count and count > 0 then
+                    ps.reqPetAddExpByItems(mainPet, {{id = fId, num = 1}})
+                    break
+                end
+            end
+        end)
+
+        -- Fight wild Evomons to grind EXP
+        if #allCreatures > 0 then
+            local bestTarget = allCreatures[1]
+            for _, c in ipairs(allCreatures) do
+                if c.level >= targetLevel then
+                    bestTarget = c
+                    break
+                end
+            end
+            SafeMoveTo(bestTarget.cframe, 8, 15)
+            task.delay(0.2, function()
+                if not IsInBattle() and BattleService and BattleService.enterPetBattle then
+                    pcall(function() BattleService.enterPetBattle(tostring(bestTarget.uid)) end)
+                end
+            end)
+            return
+        end
+
+    -- ========================================================
+    -- QUEST TYPE 6: FEED EVOMON (Goal 34 or Feed Directive)
+    -- ========================================================
+    elseif gType == 34 or quest.isFeedTask then
         pcall(function()
             local ps = require(ReplicatedStorage.Script.Pet.PetService)
             local mainPet = ps.getMainPetUid()
@@ -1469,32 +1441,46 @@ local function ExecuteQuestStep()
                 ps.reqPetInteraction(mainPet, 1)
             end
         end)
+        return
 
-    -- Goal Type 41: Arrive at Island
-    elseif gType == 41 then
+    -- ========================================================
+    -- QUEST TYPE 7: ARRIVE AT ISLAND / EXPLORATION (Goal 41 or Arrive Directive)
+    -- ========================================================
+    elseif gType == 41 or quest.isArriveTask then
         local islandId = gParams and gParams[1]
+        local targetPos = nil
         if islandId and IslandData[islandId] then
-            TeleportTo(IslandData[islandId].pos)
+            targetPos = IslandData[islandId].pos
+        elseif quest.targetIsland then
+            targetPos = quest.targetIsland.pos
+        end
+
+        if targetPos then
+            SafeMoveTo(targetPos, 12, 30)
             return
         end
-        for _, isl in ipairs(IslandData) do
-            local islandCleanName = isl.name:match("%((.+)%)") or isl.name
-            if string.find(quest.name:lower(), islandCleanName:lower()) then
-                TeleportTo(isl.pos)
-                return
-            end
-        end
 
-    -- Goal Type 42: Breakthrough tier
-    elseif gType == 42 then
+    -- ========================================================
+    -- QUEST TYPE 8: EVOLVE / BREAKTHROUGH (Goal 42 or Evolve Directive)
+    -- ========================================================
+    elseif gType == 42 or quest.isEvolveTask then
         TriggerLevelBreakthrough()
+        pcall(function()
+            local ps = require(ReplicatedStorage.Script.Pet.PetService)
+            local mainPet = ps.getMainPetUid()
+            if mainPet and ps.reqPetEvolution then
+                ps.reqPetEvolution(mainPet)
+            end
+        end)
         return
     end
 
-    -- Fallback: Engage closest wild Evomon in current area to keep progressing
+    -- ========================================================
+    -- UNIVERSAL FALLBACK: Walk towards closest creature or trigger Guide
+    -- ========================================================
     if #allCreatures > 0 then
         local target = allCreatures[1]
-        TeleportTo(target.cframe)
+        SafeMoveTo(target.cframe, 8, 15)
         task.delay(0.2, function()
             if not IsInBattle() and BattleService and BattleService.enterPetBattle then
                 pcall(function()
@@ -1505,22 +1491,18 @@ local function ExecuteQuestStep()
         return
     end
 
-    -- In-game Quest Guide button fallback
+    -- In-game Quest Guide Click
     pcall(function()
         local open = UIManager:getOpenedUIWindowList()
         for _, w in ipairs(open or {}) do
             if w.name == "MainWindow" and w.QuestButton then
-                local conns = getconnections(w.QuestButton.MouseButton1Click)
-                for _, c in ipairs(conns) do
-                    c:Fire()
-                end
+                for _, c in ipairs(getconnections(w.QuestButton.MouseButton1Click)) do c:Fire() end
                 break
             end
         end
     end)
 end
 
--- Codes list
 local ActiveCodes = {
     "240evoRISE",
     "EVO120HYPE",
