@@ -422,7 +422,19 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
 
     hum:Move(Vector3.zero)
     HubState.IsNavigating = false
-    return (root.Position - targetPos).Magnitude <= (stopDistance + 6)
+    local finalDist = (root.Position - targetPos).Magnitude
+    if finalDist <= (stopDistance + 6) then
+        return true
+    end
+
+    -- Smooth arrival fallback if close (< 120 studs) to overcome steep terrain/mesh collision walls
+    if finalDist <= 120 then
+        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 2.5, 0))
+        task.wait(HubState.PostTpDelay or 0.3)
+        return true
+    end
+
+    return false
 end
 
 -- Safe Movement router: routes all waypoints and travel through SafeMoveTo (Legit Walk by default)
@@ -939,18 +951,18 @@ local function GetCurrentQuestInfo()
     if string.find(taskLower, "king") or string.find(taskLower, "boss") or string.find(taskLower, "pebgolem") then
         isBossTask = true
         bossName = taskName:match("Defeat%s+the%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("([%a%s]+)%s+in") or "Boss"
-        bossName = bossName:gsub("^%s*(.-)%s*$", "")
+        bossName = bossName:gsub("^%s*(.-)%s*$", "%1")
     elseif string.find(taskLower, "catch") or string.find(taskLower, "capture") then
         isCatchTask = true
         targetCreatureName = taskName:match("Catch%s+a%s+([%a%s]+)%s+in") or taskName:match("Catch%s+([%a%s]+)%s+in") or taskName:match("Catch%s+([%a%s]+)")
-        if targetCreatureName then targetCreatureName = targetCreatureName:gsub("^%s*(.-)%s*$", "") end
+        if targetCreatureName then targetCreatureName = targetCreatureName:gsub("^%s*(.-)%s*$", "%1") end
     elseif string.find(taskLower, "talk") or string.find(taskLower, "speak") or string.find(taskLower, "meet") then
         isDialogueTask = true
         targetNpcName = taskName:match("Talk%s+to%s+([%a%s]+)") or taskName:match("Speak%s+with%s+([%a%s]+)")
-        if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "") end
+        if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "%1") end
     elseif string.find(taskLower, "defeat") or string.find(taskLower, "beat") or string.find(taskLower, "battle") then
         targetNpcName = taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)")
-        if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "") end
+        if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "%1") end
     elseif string.find(taskLower, "level") or string.find(taskLower, "reach") or string.find(taskLower, "lv") then
         isLevelTask = true
     elseif string.find(taskLower, "feed") then
@@ -1622,14 +1634,20 @@ TabQuest:Toggle({
     Callback = function(state)
         HubState.AutoQuest = state
         if state then
+            HubState.IsNavigating = false
             WindUI:Notify({
-                Title = "Auto Quest Started!",
-                Content = "Executing current quest objectives...",
+                Title = "Auto Quest Active!",
+                Content = "Solving current quest: " .. tostring(HubState.CurrentQuestObjective or "Scanning..."),
                 Duration = 3,
                 Icon = "play"
             })
-            task.spawn(ExecuteQuestStep)
+            task.spawn(function()
+                ExecuteQuestStep()
+            end)
         else
+            HubState.IsNavigating = false
+            local hum = GetHumanoid()
+            if hum then hum:Move(Vector3.zero) end
             WindUI:Notify({
                 Title = "Auto Quest Stopped",
                 Content = "Auto quest paused.",
@@ -2481,7 +2499,7 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
     local now = os.clock()
 
     -- Auto Quest Solver Loop (Legit Walking Mode)
-    if HubState.AutoQuest and not currentCombat and not HubState.IsNavigating and (now - HubState.LastQuestStep >= HubState.QuestStepDelay) then
+    if HubState.AutoQuest and not currentCombat and not HubState.IsNavigating and (now - HubState.LastQuestStep >= math.min(HubState.QuestStepDelay or 2.5, 2.0)) then
         HubState.LastQuestStep = now
         task.spawn(ExecuteQuestStep)
     end
