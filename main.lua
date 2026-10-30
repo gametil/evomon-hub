@@ -381,7 +381,7 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
         end
     end
 
-    -- Direct approach to destination
+    -- Direct approach to destination (Humanoid Walking Mode)
     while (os.clock() - startTime) < timeoutSec do
         if IsInBattle() or not HubState.Running then
             hum:Move(Vector3.zero)
@@ -398,8 +398,15 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
 
         hum:MoveTo(targetPos)
 
-        -- Unstuck detection
-        if (root.Position - lastPos).Magnitude < 0.6 then
+        -- Keep character facing target & walking
+        local moveDir = (targetPos - root.Position)
+        local flatDir = Vector3.new(moveDir.X, 0, moveDir.Z)
+        if flatDir.Magnitude > 0.1 then
+            hum:Move(flatDir.Unit)
+        end
+
+        -- Unstuck detection & natural jump over obstacles
+        if (root.Position - lastPos).Magnitude < 0.8 then
             stuckTicks = stuckTicks + 1
             if stuckTicks >= 3 then
                 hum.Jump = true
@@ -410,7 +417,7 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
         end
         lastPos = root.Position
 
-        task.wait(0.1)
+        task.wait(0.08)
     end
 
     hum:Move(Vector3.zero)
@@ -855,7 +862,7 @@ local function GetCurrentQuestInfo()
         end
     end
 
-    local taskId = (taskDerived and taskDerived.taskId) or (mainTask and mainTask.id)
+    local taskId = (taskDerived and taskDerived.taskId) or (mainTask and mainTask.id) or 1001
     local taskName = (taskDerived and taskDerived.taskName) or (mainTask and mainTask.taskTitle) or "No Active Quest"
     local progressText = (taskDerived and taskDerived.progressText) or ""
     local isClaimable = (taskDerived and taskDerived.isClaimable) or false
@@ -994,28 +1001,54 @@ local function ExecuteQuestStep()
 
         -- 2. Search live workspace models (Scene.Island, RuntimeCache, Scene.FunctionModel, workspace)
         if not bossTarget then
-            local candidateFolders = {
-                workspace:FindFirstChild("Scene"),
-                workspace:FindFirstChild("RuntimeCache"),
-                workspace:FindFirstChild("Monsters"),
-                workspace:FindFirstChild("NPC"),
-                workspace
-            }
-            for _, folder in ipairs(candidateFolders) do
-                if folder and not bossTarget then
-                    for _, model in ipairs(folder:GetChildren()) do
-                        local mName = model.Name:lower()
-                        if string.find(mName, "pebgolem") or string.find(mName, "king") or (string.find(mName, "boss") and string.find(mName, "1")) then
-                            local root = model:FindFirstChild("HumanoidRootPart", true) or model:FindFirstChildWhichIsA("BasePart", true)
+            -- 2a. Search through all models in workspace recursively
+            local function ScanFolderForBoss(parent)
+                if not parent or bossTarget then return end
+                for _, obj in ipairs(parent:GetChildren()) do
+                    if obj:IsA("Model") then
+                        local mName = obj.Name:lower()
+                        if string.find(mName, "pebgolem") or string.find(mName, "king") or (string.find(mName, "boss") and (string.find(mName, "1") or string.find(mName, "peb"))) then
+                            local root = obj:FindFirstChild("HumanoidRootPart", true) or obj:FindFirstChildWhichIsA("BasePart", true)
                             if root then
                                 bossTarget = {
-                                    uid = model.Name,
+                                    uid = obj.Name,
                                     cframe = root.CFrame,
                                     position = root.Position,
-                                    name = model.Name,
-                                    modelInstance = model
+                                    name = obj.Name,
+                                    modelInstance = obj
                                 }
-                                break
+                                return
+                            end
+                        end
+                    end
+                end
+            end
+
+            ScanFolderForBoss(workspace:FindFirstChild("Scene"))
+            ScanFolderForBoss(workspace:FindFirstChild("RuntimeCache"))
+            ScanFolderForBoss(workspace:FindFirstChild("Monsters"))
+            ScanFolderForBoss(workspace:FindFirstChild("NPC"))
+            ScanFolderForBoss(workspace)
+
+            -- 2b. If not found by name, detect any massive/boss-sized model (> 12 studs height/mass) within 350 studs
+            if not bossTarget then
+                local myRoot = GetRootPart()
+                if myRoot then
+                    for _, obj in ipairs(workspace:GetChildren()) do
+                        if obj:IsA("Model") and obj ~= LocalPlayer.Character then
+                            local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildWhichIsA("BasePart")
+                            if root and (root.Position - myRoot.Position).Magnitude <= 350 then
+                                local size = obj:GetExtentsSize()
+                                if size.Y >= 10 or size.X >= 10 or size.Z >= 10 then
+                                    bossTarget = {
+                                        uid = obj.Name,
+                                        cframe = root.CFrame,
+                                        position = root.Position,
+                                        name = obj.Name,
+                                        modelInstance = obj
+                                    }
+                                    break
+                                end
                             end
                         end
                     end
@@ -1602,7 +1635,7 @@ TabQuest:Section({ Title = "Autonomous Quest Solver" })
 
 TabQuest:Toggle({
     Title = "Enable Auto Quest (Follows Any Quest)",
-    Desc = "Reads your active quest, teleports to objectives/monsters, engages battles, talks to NPCs, feeds Evomons, claims rewards, and advances continuously!",
+    Desc = "Reads your active quest, walks directly to objectives/monsters, engages battles, talks to NPCs, feeds Evomons, claims rewards, and advances continuously!",
     Value = false,
     Callback = function(state)
         HubState.AutoQuest = state
@@ -2465,8 +2498,8 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
 
     local now = os.clock()
 
-    -- Auto Quest Solver Loop
-    if HubState.AutoQuest and not currentCombat and (now - HubState.LastQuestStep >= HubState.QuestStepDelay) then
+    -- Auto Quest Solver Loop (Legit Walking Mode)
+    if HubState.AutoQuest and not currentCombat and not HubState.IsNavigating and (now - HubState.LastQuestStep >= HubState.QuestStepDelay) then
         HubState.LastQuestStep = now
         task.spawn(ExecuteQuestStep)
     end
