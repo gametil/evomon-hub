@@ -328,9 +328,11 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
 
     -- Mode 3 (Default): Legit Humanoid Walk (100% Safe, zero teleport detection)
     HubState.IsNavigating = true
-    -- Only modify WalkSpeed if user explicitly enabled Custom WalkSpeed
-    if HubState.SpeedEnabled and HubState.CustomSpeed and hum.WalkSpeed ~= HubState.CustomSpeed then
+    -- Apply safe natural walking speed (22 - 26) so bot walks briskly without delaying
+    if HubState.SpeedEnabled and HubState.CustomSpeed then
         hum.WalkSpeed = HubState.CustomSpeed
+    elseif hum.WalkSpeed < 22 then
+        hum.WalkSpeed = 24
     end
 
     local startTime = os.clock()
@@ -880,23 +882,22 @@ local function GetCurrentQuestInfo()
     local isClaimable = (taskDerived and taskDerived.isClaimable) or false
     local isCompleted = (taskDerived and taskDerived.isCompleted) or false
 
-    -- Universal Screen HUD Quest Reader
+    -- Universal Screen HUD Quest Reader (Deep Scan across PlayerGui)
     pcall(function()
         local lp = LocalPlayer
         local pgui = lp and lp:FindFirstChild("PlayerGui")
         if pgui then
             for _, gui in ipairs(pgui:GetChildren()) do
-                if gui:IsA("ScreenGui") and gui.Enabled then
+                if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "WindUI" then
                     for _, desc in ipairs(gui:GetDescendants()) do
-                        if desc:IsA("TextLabel") and desc.Visible and desc.Text ~= "" then
+                        if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and desc.Visible and desc.Text ~= "" then
                             local txt = desc.Text
-                            -- Matches directives like (0/1), (1/3), Defeat, Catch, Reach, Talk, Arrive, etc.
                             local pMatch = txt:match("%((%d+/%d+)%)")
-                            if pMatch or string.find(txt, "Defeat") or string.find(txt, "Catch") or string.find(txt, "King") or string.find(txt, "Reach") or string.find(txt, "Feed") or string.find(txt, "Evolve") or string.find(txt, "Talk") then
+                            if pMatch or string.find(txt, "Defeat") or string.find(txt, "Catch") or string.find(txt, "King") or string.find(txt, "Pebgolem") or string.find(txt, "Reach") or string.find(txt, "Feed") or string.find(txt, "Evolve") or string.find(txt, "Talk") then
                                 if pMatch and progressText == "" then
                                     progressText = pMatch
                                 end
-                                if taskName == "No Active Quest" or string.find(taskName, "Task") or taskName == "" then
+                                if taskName == "No Active Quest" or string.find(taskName, "Task") or taskName == "" or string.find(txt, "King") or string.find(txt, "Defeat") then
                                     taskName = txt:gsub("%s*%(%d+/%d+%)%s*$", "")
                                 end
                                 if pMatch then
@@ -1112,29 +1113,11 @@ local function ExecuteQuestStep()
                 AlignPetCounter(9) -- Counter Rock / Ground
             end
 
-            SafeMoveTo(bossTarget.cframe, 12, 20)
-            task.wait(HubState.PostTpDelay or 0.4)
+            SafeMoveTo(bossTarget.cframe, 10, 20)
+            task.wait(HubState.PostTpDelay or 0.3)
 
             if not IsInBattle() then
-                pcall(function()
-                    if BattleService and BattleService.enterPetBattle then
-                        BattleService.enterPetBattle(tostring(bossTarget.uid))
-                    end
-                end)
-                pcall(function()
-                    if BattleService and BattleService.enterActualNpcBattle then
-                        local ps = require(ReplicatedStorage.Script.Pet.PetService)
-                        local mainPet = ps and ps.getMainPetUid and tostring(ps.getMainPetUid())
-                        if mainPet then
-                            BattleService.enterActualNpcBattle(1001, 11000001, mainPet)
-                        end
-                    end
-                end)
-                pcall(function()
-                    if BattleService and BattleService.reportEnterBossBattle then
-                        BattleService.reportEnterBossBattle(1)
-                    end
-                end)
+                -- Method 1: Fire all proximity prompts on boss
                 pcall(function()
                     local m = bossTarget.modelInstance or (bossTarget.uid and workspace:FindFirstChild(tostring(bossTarget.uid), true))
                     if m then
@@ -1144,8 +1127,36 @@ local function ExecuteQuestStep()
                                 prompt.RequiresLineOfSight = false
                                 if fireproximityprompt then fireproximityprompt(prompt) end
                                 for _, c in ipairs(getconnections(prompt.Triggered)) do c:Fire() end
+                                for _, c in ipairs(getconnections(prompt.PromptButtonHoldBegan)) do c:Fire() end
                             end
                         end
+                    end
+                end)
+                -- Method 2: Official BattleService enterPetBattle
+                pcall(function()
+                    if BattleService and BattleService.enterPetBattle then
+                        BattleService.enterPetBattle(tostring(bossTarget.uid))
+                    end
+                end)
+                -- Method 3: Official enterActualNpcBattle
+                pcall(function()
+                    if BattleService and BattleService.enterActualNpcBattle then
+                        local ps = require(ReplicatedStorage.Script.Pet.PetService)
+                        local mainPet = ps and ps.getMainPetUid and tostring(ps.getMainPetUid())
+                        if mainPet then
+                            BattleService.enterActualNpcBattle(1001, 11000001, mainPet)
+                        end
+                    end
+                end)
+                -- Method 4: Server Remotes
+                pcall(function()
+                    if Remote and Remote:FindFirstChild("Battle") and Remote.Battle:FindFirstChild("ReqEnterNpcBattle") then
+                        Remote.Battle.ReqEnterNpcBattle:FireServer(1001, 11000001)
+                    end
+                end)
+                pcall(function()
+                    if BattleService and BattleService.reportEnterBossBattle then
+                        BattleService.reportEnterBossBattle(1)
                     end
                 end)
             end
