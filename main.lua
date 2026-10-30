@@ -154,9 +154,12 @@ local HubState = {
     AutoEscapeIfHighLevel = false,
     EscapeLevelThreshold = 100,
     -- Movement & Safety (Anti-Cheat Protection)
-    MovementMode = "Walk", -- "Walk" (Safe Humanoid MoveTo / No TP), "Tween" (Smooth Glide), "Teleport" (Instant TP - Risky)
+    MovementMode = "Walk", -- "Walk" (Safe Humanoid MoveTo / No TP), "Blink" (Chunk-Hop Blink TP), "Tween" (Smooth Glide), "Teleport" (Instant TP - Risky)
     WalkSpeedBoost = 16, -- Default vanilla 16 walkspeed for 100% legit movement
     ArrivalDistance = 8,
+    BlinkChunkSize = 45, -- Max studs per micro-hop (bypasses server delta position checks)
+    BlinkDelay = 0.05, -- Micro-delay between hops
+    PostTpDelay = 0.4, -- Stabilization delay after TP before sending action
     IsNavigating = false,
     -- ESP
     EvomonESP = false,
@@ -266,11 +269,31 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
     local dist = (root.Position - targetPos).Magnitude
     if dist <= stopDistance then return true end
 
-    -- Mode 1: Instant Teleport (Only when user explicitly selects Risky TP)
+    -- Mode 1: Chunk-Hop Blink Teleport (Break large distance into small legit hops)
+    if HubState.MovementMode == "Blink" then
+        local chunkSize = HubState.BlinkChunkSize or 45
+        local hopDelay = HubState.BlinkDelay or 0.05
+        local totalDist = (root.Position - targetPos).Magnitude
+        local steps = math.max(1, math.ceil(totalDist / chunkSize))
+        local startPos = root.Position
+
+        for step = 1, steps do
+            if IsInBattle() or not HubState.Running then return true end
+            local alpha = step / steps
+            local nextPos = startPos:Lerp(targetPos, alpha)
+            root.CFrame = CFrame.new(nextPos + Vector3.new(0, 2.5, 0))
+            task.wait(hopDelay)
+        end
+        -- Post-hop settle delay so server validates player footprint
+        task.wait(HubState.PostTpDelay or 0.4)
+        return true
+    end
+
+    -- Mode 2: Instant Teleport (with velocity preservation & post-TP settle delay)
     if HubState.MovementMode == "Teleport" then
         root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3.2, 0))
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
+        -- Wait a short tick so physics & server sync finalize before any remote actions
+        task.wait(HubState.PostTpDelay or 0.35)
         return true
     end
 
@@ -401,16 +424,19 @@ end
 
 -- Teleport router: defaults to safe movement unless forceInstant is passed
 local function TeleportTo(cf, forceInstant)
-    if forceInstant or HubState.MovementMode == "Teleport" then
+    if forceInstant or HubState.MovementMode == "Teleport" or HubState.MovementMode == "Blink" then
+        local targetPos = (typeof(cf) == "CFrame" and cf.Position) or (typeof(cf) == "Vector3" and cf)
+        if not targetPos then return false end
+
+        -- If Blink mode is active, execute multi-chunk micro-hops
+        if HubState.MovementMode == "Blink" and not forceInstant then
+            return SafeMoveTo(cf, HubState.ArrivalDistance or 8)
+        end
+
         local root = GetRootPart()
         if root then
-            if typeof(cf) == "Vector3" then
-                root.CFrame = CFrame.new(cf + Vector3.new(0, 3.2, 0))
-            elseif typeof(cf) == "CFrame" then
-                root.CFrame = cf + Vector3.new(0, 3.2, 0)
-            end
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
+            root.CFrame = CFrame.new(targetPos + Vector3.new(0, 3.2, 0))
+            task.wait(HubState.PostTpDelay or 0.35)
         end
         return true
     end
@@ -2011,17 +2037,29 @@ TabPlayer:Section({ Title = "Safe Movement & Anti-Detection" })
 
 TabPlayer:Dropdown({
     Title = "Movement Mode",
-    Desc = "Legit Walk avoids server teleport detection. Instant TP is risky.",
-    Values = { "Legit Walk (Safe - No TP)", "Smooth Glide (Tween)", "Instant TP (Risky)" },
-    Value = "Legit Walk (Safe - No TP)",
+    Desc = "Legit Walk is safest. Chunk-Hop Blink makes fast movement undetectable by breaking TPs into small hops.",
+    Values = { "Legit Walk (Safest - No TP)", "Chunk-Hop Blink (Fast & Safe)", "Smooth Glide (Tween)", "Instant TP (Direct)" },
+    Value = "Legit Walk (Safest - No TP)",
     Callback = function(val)
         if string.find(val, "Walk") then
             HubState.MovementMode = "Walk"
+        elseif string.find(val, "Blink") or string.find(val, "Chunk") then
+            HubState.MovementMode = "Blink"
         elseif string.find(val, "Glide") or string.find(val, "Tween") then
             HubState.MovementMode = "Tween"
         else
             HubState.MovementMode = "Teleport"
         end
+    end
+})
+
+TabPlayer:Slider({
+    Title = "Post-Move Settle Delay",
+    Desc = "Delay in seconds before interacting/fighting after arriving to let server position sync",
+    Value = { Min = 0.2, Max = 1.5, Default = 0.4 },
+    Step = 0.05,
+    Callback = function(val)
+        HubState.PostTpDelay = val
     end
 })
 
