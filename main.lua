@@ -938,8 +938,9 @@ local function GetCurrentQuestInfo()
         end
     end
 
-    -- Intelligent Quest Category Classifier
+    -- Intelligent Quest Category Classifier (Config Data Priority)
     local taskLower = taskName:lower()
+    local gType = goalInfo and goalInfo.type
     local isBossTask = false
     local bossName = nil
     local isCatchTask = false
@@ -951,29 +952,30 @@ local function GetCurrentQuestInfo()
     local targetNpcName = nil
     local targetCreatureName = nil
 
-    if string.find(taskLower, "king") or string.find(taskLower, "boss") or string.find(taskLower, "pebgolem") then
-        isBossTask = true
-        bossName = taskName:match("Defeat%s+the%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("([%a%s]+)%s+in") or "Boss"
-        bossName = bossName:gsub("^%s*(.-)%s*$", "%1")
-    elseif string.find(taskLower, "catch") or string.find(taskLower, "capture") then
+    -- Check if it's explicitly a Catch task (Goal type 5 or title includes Catch)
+    if gType == 5 or string.find(taskLower, "catch") or string.find(taskLower, "capture") then
         isCatchTask = true
-        targetCreatureName = taskName:match("Catch%s+a%s+([%a%s]+)%s+in") or taskName:match("Catch%s+([%a%s]+)%s+in") or taskName:match("Catch%s+([%a%s]+)")
+        targetCreatureName = taskName:match("Catch%s+%d*%s*([%a%s]+)%s+in") or taskName:match("Catch%s+a%s+([%a%s]+)%s+in") or taskName:match("Catch%s+([%a%s]+)")
         if targetCreatureName then targetCreatureName = targetCreatureName:gsub("^%s*(.-)%s*$", "%1") end
-    elseif string.find(taskLower, "talk") or string.find(taskLower, "speak") or string.find(taskLower, "meet") then
+    elseif gType == 10 or string.find(taskLower, "talk") or string.find(taskLower, "speak") or string.find(taskLower, "meet") then
         isDialogueTask = true
         targetNpcName = taskName:match("Talk%s+to%s+([%a%s]+)") or taskName:match("Speak%s+with%s+([%a%s]+)")
         if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "%1") end
-    elseif string.find(taskLower, "defeat") or string.find(taskLower, "beat") or string.find(taskLower, "battle") then
+    elseif gType == 34 or string.find(taskLower, "feed") then
+        isFeedTask = true
+    elseif gType == 41 or string.find(taskLower, "arrive") or string.find(taskLower, "travel") or string.find(taskLower, "explore") then
+        isArriveTask = true
+    elseif gType == 42 or string.find(taskLower, "evolve") or string.find(taskLower, "evolution") or string.find(taskLower, "breakthrough") then
+        isEvolveTask = true
+    elseif gType == 40 or gType == 8 or string.find(taskLower, "level") or string.find(taskLower, "reach") or string.find(taskLower, "lv") then
+        isLevelTask = true
+    elseif string.find(taskLower, "pebgolem") or (string.find(taskLower, "king") and not isCatchTask) or string.find(taskLower, "boss") then
+        isBossTask = true
+        bossName = taskName:match("Defeat%s+the%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("([%a%s]+)%s+in") or "Boss"
+        bossName = bossName:gsub("^%s*(.-)%s*$", "%1")
+    elseif gType == 22 or gType == 39 or string.find(taskLower, "defeat") or string.find(taskLower, "beat") or string.find(taskLower, "battle") then
         targetNpcName = taskName:match("Defeat%s+([%a%s]+)%s+in") or taskName:match("Defeat%s+([%a%s]+)")
         if targetNpcName then targetNpcName = targetNpcName:gsub("^%s*(.-)%s*$", "%1") end
-    elseif string.find(taskLower, "level") or string.find(taskLower, "reach") or string.find(taskLower, "lv") then
-        isLevelTask = true
-    elseif string.find(taskLower, "feed") then
-        isFeedTask = true
-    elseif string.find(taskLower, "evolve") or string.find(taskLower, "evolution") or string.find(taskLower, "breakthrough") then
-        isEvolveTask = true
-    elseif string.find(taskLower, "arrive") or string.find(taskLower, "travel") or string.find(taskLower, "explore") then
-        isArriveTask = true
     end
 
     HubState.CurrentQuestObjective = taskName
@@ -1038,9 +1040,9 @@ local function ExecuteQuestStep()
     local allCreatures = FetchWildCreatures()
 
     -- ========================================================
-    -- QUEST TYPE 1: BOSS / KING ELIMINATION
+    -- QUEST TYPE 1: BOSS / KING ELIMINATION (Only when not a catch/wild objective)
     -- ========================================================
-    if quest.isBossTask or (quest.name and (string.find(quest.name:lower(), "king") or string.find(quest.name:lower(), "pebgolem"))) then
+    if (quest.isBossTask or (quest.name and string.find(quest.name:lower(), "pebgolem"))) and not quest.isCatchTask and gType ~= 5 and gType ~= 4 then
         local bossTarget = nil
         local searchName = quest.bossName or "Pebgolem"
         local searchLower = searchName:lower()
