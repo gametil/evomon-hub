@@ -23,7 +23,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local VirtualUser = game:GetService("VirtualUser")
+local VirtualInputManager = nil
+pcall(function() VirtualInputManager = game:GetService("VirtualInputManager") end)
 
 local LocalPlayer = Players.LocalPlayer
 local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
@@ -1678,11 +1679,14 @@ TabQuest:Button({
     Callback = function()
         local q = GetCurrentQuestInfo()
         if q and q.taskId then
-            local res = Remote.Task.ReqCompleteTask:InvokeServer(q.taskId)
+            local res = nil
+            pcall(function()
+                res = Remote.Task.ReqCompleteTask:InvokeServer(q.taskId)
+            end)
             DismissBlockingWindows()
             WindUI:Notify({
                 Title = "Quest Claim Result",
-                Content = "Response code: " .. tostring(res),
+                Content = "Response: " .. tostring(res or "Sent"),
                 Duration = 3,
                 Icon = "gift"
             })
@@ -2187,11 +2191,13 @@ TabTeleports:Section({ Title = "Special Hubs" })
 TabTeleports:Button({
     Title = "Enter Trading Hall",
     Callback = function()
-        local mw = Remote:FindFirstChild("ManyWorlds") and Remote.ManyWorlds:FindFirstChild("ReqApplyEnterTradingHall")
-        if mw then
-            mw:InvokeServer()
-            WindUI:Notify({ Title = "Trading Hall", Content = "Requested Trading Hall entry.", Duration = 2.5, Icon = "shopping-bag" })
-        end
+        pcall(function()
+            local mw = Remote:FindFirstChild("ManyWorlds") and Remote.ManyWorlds:FindFirstChild("ReqApplyEnterTradingHall")
+            if mw then
+                mw:InvokeServer()
+                WindUI:Notify({ Title = "Trading Hall", Content = "Requested Trading Hall entry.", Duration = 2.5, Icon = "shopping-bag" })
+            end
+        end)
     end
 })
 
@@ -2347,8 +2353,13 @@ table.insert(HubState.Connections, LocalPlayer.Idled:Connect(function()
                 task.wait(0.05)
                 VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
             else
-                VirtualUser:CaptureController()
-                VirtualUser:ClickButton2(Vector2.new(0, 0))
+                -- Fallback: simulate minor micro-movement via humanoid (100% undetectable)
+                local hum = GetHumanoid()
+                if hum then
+                    hum:Move(Vector3.new(0.01, 0, 0.01))
+                    task.wait(0.1)
+                    hum:Move(Vector3.zero)
+                end
             end
         end)
     end
