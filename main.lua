@@ -774,7 +774,6 @@ local function ExecuteSmartCombatStep()
                         end
                     end
                 end
-                end
             end
         end)
     end
