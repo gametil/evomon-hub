@@ -898,7 +898,10 @@ local function GetCurrentQuestInfo()
                                     progressText = pMatch
                                 end
                                 if taskName == "No Active Quest" or string.find(taskName, "Task") or taskName == "" or string.find(txt, "King") or string.find(txt, "Defeat") then
-                                    taskName = txt:gsub("%s*%(%d+/%d+%)%s*$", "")
+                                    local cleaned = txt:gsub("%s*%(%d+/%d+%)%s*$", "")
+                                    cleaned = cleaned:gsub("[
+]+", " "):gsub("%s+", " ")
+                                    taskName = cleaned
                                 end
                                 if pMatch then
                                     local cur, max = pMatch:match("(%d+)/(%d+)")
@@ -1082,16 +1085,40 @@ local function ExecuteQuestStep()
             ScanFolderForBoss(workspace)
         end
 
-        -- 1c. Giant Model Proximity Detection fallback (Massive boss model)
+        -- 1c. Deep Descendants Scan for Pebgolem / King Model in Workspace
+        if not bossTarget then
+            pcall(function()
+                for _, obj in ipairs(workspace:GetDescendants()) do
+                    if obj:IsA("Model") and obj ~= LocalPlayer.Character then
+                        local mName = obj.Name:lower()
+                        if string.find(mName, "pebgolem") or string.find(mName, "king") or (string.find(mName, "boss") and string.find(mName, "peb")) then
+                            local root = obj:FindFirstChild("HumanoidRootPart", true) or obj:FindFirstChildWhichIsA("BasePart", true)
+                            if root then
+                                bossTarget = {
+                                    uid = obj.Name,
+                                    cframe = root.CFrame,
+                                    position = root.Position,
+                                    name = obj.Name,
+                                    modelInstance = obj
+                                }
+                                break
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+
+        -- 1d. Giant Model Proximity Detection fallback (Massive boss model within 450 studs)
         if not bossTarget then
             local myRoot = GetRootPart()
             if myRoot then
                 for _, obj in ipairs(workspace:GetChildren()) do
                     if obj:IsA("Model") and obj ~= LocalPlayer.Character then
                         local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildWhichIsA("BasePart")
-                        if root and (root.Position - myRoot.Position).Magnitude <= 350 then
+                        if root and (root.Position - myRoot.Position).Magnitude <= 450 then
                             local size = obj:GetExtentsSize()
-                            if size.Y >= 10 or size.X >= 10 or size.Z >= 10 then
+                            if size.Y >= 9 or size.X >= 9 or size.Z >= 9 then
                                 bossTarget = {
                                     uid = obj.Name,
                                     cframe = root.CFrame,
@@ -1162,14 +1189,13 @@ local function ExecuteQuestStep()
             end
             return
         else
-            -- Navigate towards Boss Island if on wrong island
-            if quest.targetIsland and HubState.AutoNavigateToQuestIsland then
-                local myPos = GetRootPart() and GetRootPart().Position or Vector3.zero
-                local distToIsland = (myPos - quest.targetIsland.pos).Magnitude
-                if distToIsland > 400 then
-                    SafeMoveTo(quest.targetIsland.pos, 15, 30)
-                    return
-                end
+            -- Navigate towards Boss Island if on wrong island (Defaults to Island 1 Verdant Valley for Pebgolem King)
+            local targetPos = (quest.targetIsland and quest.targetIsland.pos) or IslandData[1].pos
+            local myPos = GetRootPart() and GetRootPart().Position or Vector3.zero
+            local distToIsland = (myPos - targetPos).Magnitude
+            if distToIsland > 250 then
+                SafeMoveTo(targetPos, 15, 30)
+                return
             end
         end
     end
