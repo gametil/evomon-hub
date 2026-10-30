@@ -452,14 +452,8 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
         return true
     end
 
-    -- Smooth arrival fallback if close (< 120 studs) to overcome steep terrain/mesh collision walls
-    if finalDist <= 120 then
-        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 2.5, 0))
-        task.wait(HubState.PostTpDelay or 0.3)
-        return true
-    end
-
-    return false
+    -- Pure Walking Mode: Zero teleportations or instant CFrame sets
+    return finalDist <= (stopDistance + 6)
 end
 
 -- Safe Movement router: routes all waypoints and travel through SafeMoveTo (Legit Walk by default)
