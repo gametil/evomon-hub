@@ -739,22 +739,41 @@ local function ExecuteSmartCombatStep()
                     MBWC.triggerNormalSkillBySlotIndex(bestSlot)
                 end
 
-                -- GUI fallback: activate skill button if available
-                if battleWin and battleWin.instance then
-                    local skillArea = battleWin.instance:FindFirstChild("SkillArea", true) or battleWin.instance:FindFirstChild("Skills", true)
-                    if skillArea then
-                        local btns = {}
-                        for _, child in ipairs(skillArea:GetChildren()) do
-                            if child:IsA("GuiButton") and child.Visible then
-                                table.insert(btns, child)
+                -- GUI fallback: activate skill button via PetNormalSkillScrollView or SkillArea
+                if battleWin then
+                    local scroll = battleWin.PetNormalSkillScrollView or (battleWin.instance and battleWin.instance:FindFirstChild("PetNormalSkillScrollView", true))
+                    if scroll then
+                        local count = 0
+                        for _, child in ipairs(scroll:GetChildren()) do
+                            if child:IsA("GuiObject") and child.Name == "PetSkillItem" then
+                                count = count + 1
+                                if count == bestSlot then
+                                    local btn = child:FindFirstChildWhichIsA("GuiButton", true) or (child:IsA("GuiButton") and child)
+                                    if btn then
+                                        for _, c in ipairs(getconnections(btn.MouseButton1Click)) do c:Fire() end
+                                        for _, c in ipairs(getconnections(btn.Activated)) do c:Fire() end
+                                    end
+                                    break
+                                end
                             end
                         end
-                        local targetBtn = btns[bestSlot]
-                        if targetBtn then
-                            for _, c in ipairs(getconnections(targetBtn.MouseButton1Click)) do c:Fire() end
-                            for _, c in ipairs(getconnections(targetBtn.Activated)) do c:Fire() end
+                    elseif battleWin.instance then
+                        local skillArea = battleWin.instance:FindFirstChild("SkillArea", true) or battleWin.instance:FindFirstChild("Skills", true)
+                        if skillArea then
+                            local btns = {}
+                            for _, child in ipairs(skillArea:GetChildren()) do
+                                if child:IsA("GuiButton") and child.Visible then
+                                    table.insert(btns, child)
+                                end
+                            end
+                            local targetBtn = btns[bestSlot]
+                            if targetBtn then
+                                for _, c in ipairs(getconnections(targetBtn.MouseButton1Click)) do c:Fire() end
+                                for _, c in ipairs(getconnections(targetBtn.Activated)) do c:Fire() end
+                            end
                         end
                     end
+                end
                 end
             end
         end)
