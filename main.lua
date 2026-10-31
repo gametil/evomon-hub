@@ -90,6 +90,8 @@ local Window = WindUI:CreateWindow({
     Resizable = true,
     HideSearchBar = false,
     ScrollBarEnabled = true,
+    Keybind = Enum.KeyCode.RightControl,
+    ToggleKey = Enum.KeyCode.RightControl,
     OpenButton = {
         Title = "Open Evomon Hub",
         Icon = "sparkles",
@@ -361,18 +363,25 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
         return (root.Position - targetPos).Magnitude <= (stopDistance + 6)
     end
 
-    -- Mode 3 (Default): Legit Humanoid Walk (100% Safe, zero teleport detection)
+    -- Mode 3 (Default): Legit Humanoid Walk (100% Safe, zero teleport detection, never locks player controls)
     HubState.IsNavigating = true
-    -- Apply safe natural walking speed (22 - 26) so bot walks briskly without delaying
-    if HubState.SpeedEnabled and HubState.CustomSpeed then
-        hum.WalkSpeed = HubState.CustomSpeed
-    elseif hum.WalkSpeed < 22 then
-        hum.WalkSpeed = 24
+    local appliedWalkSpeed = (HubState.SpeedEnabled and HubState.CustomSpeed) or (HubState.WalkSpeedBoost or 24)
+    if hum.WalkSpeed < appliedWalkSpeed then
+        hum.WalkSpeed = appliedWalkSpeed
     end
 
     local startTime = os.clock()
     local lastPos = root.Position
     local stuckTicks = 0
+
+    -- Helper to yield/stop if the user touches controls (WASD / controller)
+    local function CheckPlayerControlTakeover()
+        -- In Roblox, hum.MoveDirection reflects active player control input (WASD / Mobile thumbstick)
+        if hum.MoveDirection.Magnitude > 0.05 then
+            return true
+        end
+        return false
+    end
 
     -- For medium-to-long paths (> 35 studs), compute obstacle-aware waypoints
     if dist > 35 then
@@ -394,6 +403,11 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
                     HubState.IsNavigating = false
                     return true
                 end
+                -- Yield auto-walk if player is manually walking (prioritize user controls 100%)
+                if CheckPlayerControlTakeover() then
+                    HubState.IsNavigating = false
+                    return false
+                end
                 if (os.clock() - startTime) > timeoutSec then break end
 
                 local wp = waypoints[i]
@@ -404,7 +418,7 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
                 hum:MoveTo(wp.Position)
                 local stepT0 = os.clock()
                 while (os.clock() - stepT0) < 2.5 do
-                    if IsInBattle() then
+                    if IsInBattle() or CheckPlayerControlTakeover() then
                         HubState.IsNavigating = false
                         return true
                     end
@@ -421,31 +435,29 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
     -- Direct approach to destination (Humanoid Walking Mode)
     while (os.clock() - startTime) < timeoutSec do
         if IsInBattle() or not HubState.Running then
-            hum:Move(Vector3.zero)
             HubState.IsNavigating = false
             return true
+        end
+
+        -- Respect player manual control takeover: do not fight player WASD
+        if CheckPlayerControlTakeover() then
+            HubState.IsNavigating = false
+            return false
         end
 
         local curDist = (root.Position - targetPos).Magnitude
         if curDist <= stopDistance then
-            hum:Move(Vector3.zero)
             HubState.IsNavigating = false
             return true
         end
 
+        -- Smooth MoveTo without continuous hum:Move overriding player inputs
         hum:MoveTo(targetPos)
 
-        -- Keep character facing target & walking
-        local moveDir = (targetPos - root.Position)
-        local flatDir = Vector3.new(moveDir.X, 0, moveDir.Z)
-        if flatDir.Magnitude > 0.1 then
-            hum:Move(flatDir.Unit)
-        end
-
         -- Unstuck detection & natural jump over obstacles
-        if (root.Position - lastPos).Magnitude < 0.8 then
+        if (root.Position - lastPos).Magnitude < 0.6 then
             stuckTicks = stuckTicks + 1
-            if stuckTicks >= 3 then
+            if stuckTicks >= 4 then
                 hum.Jump = true
                 stuckTicks = 0
             end
@@ -457,14 +469,8 @@ local function SafeMoveTo(cfOrPos, stopDistance, timeoutSec)
         task.wait(0.08)
     end
 
-    hum:Move(Vector3.zero)
     HubState.IsNavigating = false
     local finalDist = (root.Position - targetPos).Magnitude
-    if finalDist <= (stopDistance + 6) then
-        return true
-    end
-
-    -- Pure Walking Mode: Zero teleportations or instant CFrame sets
     return finalDist <= (stopDistance + 6)
 end
 
@@ -3014,6 +3020,26 @@ TabPlayer:Toggle({
 
 TabPlayer:Section({ Title = "Hub Management" })
 
+TabPlayer:Keybind({
+    Title = "Toggle UI Keybind",
+    Desc = "Press key to hide/show UI to immediately free camera & mouse controls",
+    Value = Enum.KeyCode.RightControl,
+    Callback = function(key)
+        pcall(function()
+            if Window and Window.SetToggleKey then
+                Window:SetToggleKey(key)
+            end
+        end)
+    end
+})
+
+TabPlayer:Button({
+    Title = "Close / Toggle UI (RightControl)",
+    Callback = function()
+        ToggleHubUI()
+    end
+})
+
 TabPlayer:Button({
     Title = "Unload Hub",
     Callback = function()
@@ -3024,6 +3050,28 @@ TabPlayer:Button({
 -- ====================
 -- BACKGROUND LOOPS & EVENT CONNECTIONS
 -- ====================
+
+-- Toggle UI Keybinds & Control Freedom Handler
+local function ToggleHubUI()
+    pcall(function()
+        if Window then
+            if Window.Toggle then
+                Window:Toggle()
+            elseif Window.UIElements and Window.UIElements.Main then
+                Window.UIElements.Main.Visible = not Window.UIElements.Main.Visible
+            end
+        end
+    end)
+end
+
+-- Keybind listener: RightControl, RightShift, or Insert toggles the UI
+table.insert(HubState.Connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed then
+        if input.KeyCode == Enum.KeyCode.RightControl or input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
+            ToggleHubUI()
+        end
+    end
+end))
 
 -- Anti-AFK Listener
 local VirtualInputManager = nil
