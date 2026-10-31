@@ -173,6 +173,14 @@ local HubState = {
     SelectedSpeciesCatch = nil,
     ManualCatchTargetUid = nil,
     ActiveCatchRoutineRunning = false,
+    SelectedTierFilter = "All",
+    SelectedBossUid = nil,
+    -- Auto Chest & Legendary Finder
+    AutoOpenChests = false,
+    AutoFindLegendary = false,
+    LastChestCheck = 0,
+    LastLegendaryCheck = 0,
+    OpenedChestCount = 0,
     -- Player Mods
     SpeedEnabled = false,
     CustomSpeed = 16,
@@ -874,25 +882,71 @@ local function GetCreaturesNearPos(targetPos, maxRadius)
     return nearby
 end
 
--- Get unique list of wild Evomon / Pokemon species available on the server
-local function GetUniqueWildSpecies()
+-- Analyze and classify a Pokemon / Evomon into Small / Tier 1, Tier 2, or Tier 3+ (Excluding Bosses)
+local function AnalyzePokemonTier(cfgId, level, name)
+    name = name or ""
+    local nameLower = name:lower()
+    if string.find(nameLower, "boss") or string.find(nameLower, "king") or string.find(nameLower, "pebgolem") or string.find(nameLower, "摆放") or string.find(nameLower, "测试") then
+        return "Boss"
+    end
+
+    local petCfg = cfgId and PetConfig and PetConfig[cfgId]
+    local prev = petCfg and petCfg.previousPet
+    local evolve = petCfg and petCfg.evolveId
+    local hasNextEvolve = (evolve and #evolve > 0 and evolve[1] ~= 0)
+    local isFirstForm = (prev and prev == cfgId)
+    local lvl = tonumber(level) or 1
+
+    -- Small / Tier 1: Base unevolved forms or lower levels with valid next evolution
+    if isFirstForm or (hasNextEvolve and lvl <= 40) or (lvl <= 25 and not string.find(nameLower, "mane") and not string.find(nameLower, "king")) then
+        return "Tier 1 (Small)"
+    -- Second Tier / Mid forms: Mid level or stage 2 evolution
+    elseif (hasNextEvolve and lvl <= 80) or (lvl > 25 and lvl <= 75) then
+        return "Tier 2 (Mid)"
+    else
+        return "Tier 3+ (Final)"
+    end
+end
+
+-- Get unique list of wild Evomon / Pokemon species filtered by Tier (Small / Tier 1, Tier 2, Tier 3+, or All)
+-- Explicitly excludes Bosses so they do not clutter regular catch lists
+local function GetUniqueWildSpecies(tierFilter)
     local all = FetchWildCreatures()
     local speciesMap = {}
     for _, c in ipairs(all) do
         local name = c.name
-        if name and not speciesMap[name] and not string.find(name, "测试") and not string.find(name, "boss摆放") and not string.find(name, "ID_") then
-            speciesMap[name] = {
-                name = name,
-                cfgId = c.cfgId,
-                sampleUid = c.uid,
-                closestDistance = c.distance,
-                count = 1
-            }
-        elseif name and speciesMap[name] then
-            speciesMap[name].count = speciesMap[name].count + 1
-            if c.distance < speciesMap[name].closestDistance then
-                speciesMap[name].closestDistance = c.distance
-                speciesMap[name].sampleUid = c.uid
+        if name and not string.find(name, "摆放") and not string.find(name, "测试") and not string.find(name, "ID_") then
+            local tier = AnalyzePokemonTier(c.cfgId, c.level, name)
+            if tier ~= "Boss" then
+                local matchesFilter = false
+                if not tierFilter or tierFilter == "All" then
+                    matchesFilter = true
+                elseif tierFilter == "Tier 1" or tierFilter == "Small" then
+                    matchesFilter = (tier == "Tier 1 (Small)")
+                elseif tierFilter == "Tier 2" or tierFilter == "Second Tier" then
+                    matchesFilter = (tier == "Tier 2 (Mid)")
+                elseif tierFilter == "Tier 3" or tierFilter == "Final" then
+                    matchesFilter = (tier == "Tier 3+ (Final)")
+                end
+
+                if matchesFilter then
+                    if not speciesMap[name] then
+                        speciesMap[name] = {
+                            name = name,
+                            cfgId = c.cfgId,
+                            sampleUid = c.uid,
+                            closestDistance = c.distance,
+                            tier = tier,
+                            count = 1
+                        }
+                    else
+                        speciesMap[name].count = speciesMap[name].count + 1
+                        if c.distance < speciesMap[name].closestDistance then
+                            speciesMap[name].closestDistance = c.distance
+                            speciesMap[name].sampleUid = c.uid
+                        end
+                    end
+                end
             end
         end
     end
@@ -903,6 +957,133 @@ local function GetUniqueWildSpecies()
     end
     table.sort(list, function(a, b) return a.name < b.name end)
     return list
+end
+
+-- Dedicated Boss & King Analysis: Finds and tracks world bosses, island kings, and raid entities separately
+local function GetActiveBossList()
+    local all = FetchWildCreatures()
+    local bossList = {}
+    local seen = {}
+
+    for _, c in ipairs(all) do
+        local name = c.name or ""
+        local nameLower = name:lower()
+        local isBoss = string.find(nameLower, "boss") or string.find(nameLower, "king") or string.find(nameLower, "pebgolem") or string.find(name, "摆放")
+
+        if isBoss and not seen[c.uid] then
+            seen[c.uid] = true
+            local cleanTitle = name
+            if string.find(cleanTitle, "摆放") then
+                local islMatch = cleanTitle:match("(岛%d+boss)")
+                cleanTitle = islMatch and (islMatch .. " (Island Boss)") or cleanTitle
+            end
+            table.insert(bossList, {
+                uid = tostring(c.uid),
+                cfgId = c.cfgId,
+                name = cleanTitle,
+                rawName = name,
+                level = c.level or 1,
+                distance = c.distance,
+                cframe = c.cframe,
+                position = c.position
+            })
+        end
+    end
+
+    table.sort(bossList, function(a, b) return a.distance < b.distance end)
+    return bossList
+end
+
+-- Challenge or Fight a specific Boss from the Boss tab
+local function ChallengeSelectedBoss(bossUid)
+    local bosses = GetActiveBossList()
+    local target = nil
+    for _, b in ipairs(bosses) do
+        if b.uid == tostring(bossUid) then
+            target = b
+            break
+        end
+    end
+    if not target and #bosses > 0 then
+        target = bosses[1]
+    end
+    if not target then
+        return false, "No active boss found."
+    end
+
+    task.spawn(function()
+        SafeMoveTo(target.cframe, 10, 20)
+        task.wait(HubState.PostTpDelay or 0.3)
+        if not IsInBattle() and BattleService and BattleService.enterPetBattle then
+            pcall(function()
+                BattleService.enterPetBattle(tostring(target.uid))
+            end)
+        end
+    end)
+    return true, target
+end
+
+-- Auto Chest Open Routine: Interacts with & claims all explore chests on the map
+local function ClaimNearbyExploreChests()
+    local myUserId = LocalPlayer.UserId
+    local cs = nil
+    pcall(function() cs = require(ReplicatedStorage.Script.Chest.ChestService) end)
+    if not cs or not cs.getChests then return 0 end
+
+    local remote = Remote:FindFirstChild("Chest") and Remote.Chest:FindFirstChild("ReqClaimExploreReward")
+    if not remote then return 0 end
+
+    local chests = cs.getChests()
+    if not chests then return 0 end
+
+    local claimed = 0
+    for uid, data in pairs(chests) do
+        local sd = data.sourceData
+        if sd and (sd.owner == myUserId or sd.owner == 0 or sd.owner == nil) then
+            local ok, res = pcall(function()
+                return remote:InvokeServer(tostring(uid))
+            end)
+            if ok and (res == 20000 or res == 20001) then
+                claimed = claimed + 1
+                HubState.OpenedChestCount = HubState.OpenedChestCount + 1
+                task.wait(0.08)
+            end
+        end
+    end
+    return claimed
+end
+
+-- Auto Find & Claim Legendary Items / Mythic Drops across the world
+local function FindAndCollectLegendaryItems()
+    local myUserId = LocalPlayer.UserId
+    local count = 0
+
+    -- 1. Scan and claim explore chests (which carry high-tier eggs, legendary fruit, and skill chests)
+    count = count + ClaimNearbyExploreChests()
+
+    -- 2. Scan world models for rare drop items / eggs
+    pcall(function()
+        local pool = workspace:FindFirstChild("[SpawnObjectPool]") or workspace:FindFirstChild("Resources")
+        if pool then
+            for _, item in ipairs(pool:GetDescendants()) do
+                if item:IsA("ProximityPrompt") and item.Enabled then
+                    local pName = (item.ObjectText .. " " .. item.ActionText):lower()
+                    if string.find(pName, "legend") or string.find(pName, "egg") or string.find(pName, "chest") or string.find(pName, "rare") then
+                        SafeMoveTo(item.Parent:GetPivot().Position, 6, 10)
+                        task.wait(0.2)
+                        pcall(function()
+                            if fireproximityprompt then
+                                fireproximityprompt(item)
+                            end
+                        end)
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end)
+
+    return count
 end
 
 -- Find and Catch a specific Pokemon / Evomon species or UID
@@ -1784,6 +1965,11 @@ local TabIslandFarm = Window:Tab({
     Icon = "swords",
 })
 
+local TabBosses = Window:Tab({
+    Title = "World Bosses & Kings",
+    Icon = "skull",
+})
+
 local TabRadar = Window:Tab({
     Title = "Wild Evomons & ESP",
     Icon = "compass",
@@ -2237,17 +2423,114 @@ TabRadar:Button({
     end
 })
 
-TabRadar:Section({ Title = "Pokemon / Evomon Finder & Auto Catch" })
+-- ===================================================
+-- TAB: WORLD BOSSES & KINGS (SEPARATE DEDICATED METHOD)
+-- ===================================================
 
-local SpeciesDropdownValues = {}
-local function RefreshSpeciesList()
-    local list = GetUniqueWildSpecies()
+TabBosses:Section({ Title = "Active World Bosses & Island Kings" })
+
+local BossDropdownValues = {}
+local function RefreshBossList()
+    local list = GetActiveBossList()
     local names = {}
-    for _, s in ipairs(list) do
-        table.insert(names, string.format("%s (%d wild | ~%dm)", s.name, s.count, math.floor(s.closestDistance)))
+    for _, b in ipairs(list) do
+        table.insert(names, string.format("%s (Lvl %d | ~%dm)", b.name, b.level, math.floor(b.distance)))
     end
     if #names == 0 then
-        names = { "(No wild species found - click Refresh)" }
+        names = { "(No active bosses spawned right now)" }
+    end
+    BossDropdownValues = names
+    return names
+end
+RefreshBossList()
+
+local SelectedBossTargetUid = nil
+
+local BossDropdown = TabBosses:Dropdown({
+    Title = "Select World Boss / King",
+    Desc = "Displays all current boss and king entities separated from regular wild Pokemon",
+    Values = BossDropdownValues,
+    Value = BossDropdownValues[1],
+    Callback = function(val)
+        local bosses = GetActiveBossList()
+        for _, b in ipairs(bosses) do
+            if string.find(val, b.name) then
+                SelectedBossTargetUid = b.uid
+                HubState.SelectedBossUid = b.uid
+                break
+            end
+        end
+    end
+})
+
+TabBosses:Button({
+    Title = "Challenge Selected Boss Now",
+    Desc = "Teleports/navigates to the chosen boss and initiates combat",
+    Callback = function()
+        local ok, targetOrErr = ChallengeSelectedBoss(SelectedBossTargetUid or HubState.SelectedBossUid)
+        if ok and type(targetOrErr) == "table" then
+            WindUI:Notify({
+                Title = "Challenging " .. targetOrErr.name .. "!",
+                Content = string.format("Level %d | Navigating to Boss Arena!", targetOrErr.level),
+                Duration = 3.5,
+                Icon = "skull"
+            })
+        else
+            WindUI:Notify({
+                Title = "Boss Notice",
+                Content = tostring(targetOrErr or "No boss found."),
+                Duration = 2.5,
+                Icon = "alert-circle"
+            })
+        end
+    end
+})
+
+TabBosses:Button({
+    Title = "Refresh Active Bosses",
+    Desc = "Rescans server for newly spawned Island Kings and World Bosses",
+    Callback = function()
+        HubState.LastCreatureScan = 0
+        local names = RefreshBossList()
+        pcall(function()
+            if BossDropdown and BossDropdown.SetValues then
+                BossDropdown:SetValues(names)
+            end
+        end)
+        WindUI:Notify({
+            Title = "Bosses Updated",
+            Content = string.format("Detected %d active bosses/kings on server.", #names),
+            Duration = 2.5,
+            Icon = "refresh-cw"
+        })
+    end
+})
+
+TabBosses:Button({
+    Title = "Teleport Directly To World Boss Island",
+    Desc = "Warps to World 1 Boss Arena (World1BossIsland1)",
+    Callback = function()
+        TeleportTo(Vector3.new(12654, 598, -9070))
+        WindUI:Notify({ Title = "World Boss Island", Content = "Teleported to World Boss arena!", Duration = 3, Icon = "map-pin" })
+    end
+})
+
+-- ===================================================
+-- TAB: WILD EVOMONS & ESP (TIERED / SMALL POKEMON CATCH)
+-- ===================================================
+
+TabRadar:Section({ Title = "Pokemon / Evomon Finder & Auto Catch" })
+
+local CurrentTierFilter = "All"
+local SpeciesDropdownValues = {}
+local function RefreshSpeciesList()
+    local list = GetUniqueWildSpecies(CurrentTierFilter)
+    local names = {}
+    for _, s in ipairs(list) do
+        table.insert(names, string.format("[%s] %s (%d wild | ~%dm)", s.tier, s.name, s.count, math.floor(s.closestDistance)))
+    end
+    if #names == 0 then
+        names = { "(No species matching filter - click Refresh)" }
     end
     SpeciesDropdownValues = names
     return names
@@ -2256,13 +2539,39 @@ RefreshSpeciesList()
 
 local SelectedWildSpeciesName = nil
 
+TabRadar:Dropdown({
+    Title = "Filter By Pokemon Tier / Evolution Stage",
+    Desc = "Filter: Small / Tier 1 (Base forms), Tier 2 (Mid forms), Tier 3+ (Final forms), or All (Bosses excluded)",
+    Values = { "All (Excluding Bosses)", "Small / Tier 1 Only", "Second Tier (Tier 2) Only", "Tier 3+ (Final) Only" },
+    Value = "All (Excluding Bosses)",
+    Callback = function(val)
+        if string.find(val, "Small") or string.find(val, "Tier 1") then
+            CurrentTierFilter = "Small"
+        elseif string.find(val, "Second Tier") or string.find(val, "Tier 2") then
+            CurrentTierFilter = "Tier 2"
+        elseif string.find(val, "Tier 3") then
+            CurrentTierFilter = "Tier 3"
+        else
+            CurrentTierFilter = "All"
+        end
+        HubState.SelectedTierFilter = CurrentTierFilter
+        HubState.LastCreatureScan = 0
+        local names = RefreshSpeciesList()
+        pcall(function()
+            if SpeciesDropdown and SpeciesDropdown.SetValues then
+                SpeciesDropdown:SetValues(names)
+            end
+        end)
+    end
+})
+
 local SpeciesDropdown = TabRadar:Dropdown({
     Title = "Select Pokemon / Evomon To Catch",
-    Desc = "Lists all wild Pokemon currently spawned in the game world",
+    Desc = "Lists all wild Pokemon matching your tier filter (Bosses are placed in Bosses tab)",
     Values = SpeciesDropdownValues,
     Value = SpeciesDropdownValues[1],
     Callback = function(val)
-        local rawName = val:match("^([%a%s]+)%s*%(") or val
+        local rawName = val:match("%]%s*([%a%s]+)%s*%(") or val:match("^([%a%s]+)%s*%(") or val
         SelectedWildSpeciesName = rawName:gsub("^%s*(.-)%s*$", "%1")
         HubState.SelectedSpeciesCatch = SelectedWildSpeciesName
     end
@@ -2273,8 +2582,8 @@ TabRadar:Button({
     Desc = "Locates the selected Pokemon anywhere in the world, navigates to it, engages, and catches it!",
     Callback = function()
         local nameToCatch = SelectedWildSpeciesName or HubState.SelectedSpeciesCatch
-        if not nameToCatch or nameToCatch:find("No wild species") then
-            local all = FetchWildCreatures()
+        if not nameToCatch or nameToCatch:find("No species") then
+            local all = GetUniqueWildSpecies(CurrentTierFilter)
             if #all > 0 then nameToCatch = all[1].name end
         end
 
@@ -2310,7 +2619,7 @@ TabRadar:Button({
         end)
         WindUI:Notify({
             Title = "Wild Pokemon Scanned",
-            Content = string.format("Found %d unique species currently alive on the map.", #names),
+            Content = string.format("Found %d unique species for %s filter.", #names, CurrentTierFilter),
             Duration = 2.5,
             Icon = "refresh-cw"
         })
@@ -2318,24 +2627,41 @@ TabRadar:Button({
 })
 
 TabRadar:Button({
-    Title = "Catch Closest Pokemon Now",
-    Desc = "Immediately finds and catches whatever Pokemon is closest to you",
+    Title = "Catch Closest Small / Tier 1 Pokemon",
+    Desc = "Instantly finds and catches the nearest small / Tier 1 base form creature",
     Callback = function()
-        local ok, targetOrErr = CatchSpecificEvomon(nil)
+        local smallList = GetUniqueWildSpecies("Small")
+        local targetName = smallList[1] and smallList[1].name
+        local ok, targetOrErr = CatchSpecificEvomon(targetName)
         if ok and type(targetOrErr) == "table" then
             WindUI:Notify({
-                Title = "Catching " .. targetOrErr.name .. "!",
-                Content = string.format("Level %d | Navigating and throwing ball!", targetOrErr.level),
+                Title = "Catching Small " .. targetOrErr.name .. "!",
+                Content = string.format("Level %d | Throwing PokeBall!", targetOrErr.level),
                 Duration = 3.5,
                 Icon = "zap"
             })
         else
+            WindUI:Notify({ Title = "Notice", Content = "No small Pokemon found nearby.", Duration = 2.5, Icon = "alert-circle" })
+        end
+    end
+})
+
+TabRadar:Button({
+    Title = "Catch Closest Second Tier Pokemon",
+    Desc = "Instantly finds and catches the nearest second tier / mid evolution creature",
+    Callback = function()
+        local tier2List = GetUniqueWildSpecies("Tier 2")
+        local targetName = tier2List[1] and tier2List[1].name
+        local ok, targetOrErr = CatchSpecificEvomon(targetName)
+        if ok and type(targetOrErr) == "table" then
             WindUI:Notify({
-                Title = "Notice",
-                Content = tostring(targetOrErr or "Could not find nearby target."),
-                Duration = 2.5,
-                Icon = "alert-circle"
+                Title = "Catching Tier 2 " .. targetOrErr.name .. "!",
+                Content = string.format("Level %d | Throwing PokeBall!", targetOrErr.level),
+                Duration = 3.5,
+                Icon = "zap"
             })
+        else
+            WindUI:Notify({ Title = "Notice", Content = "No second tier Pokemon found nearby.", Duration = 2.5, Icon = "alert-circle" })
         end
     end
 })
@@ -2449,6 +2775,76 @@ TabRewards:Button({
         else
             WindUI:Notify({ Title = "Code Response", Content = "Code expired or already claimed (" .. tostring(res) .. ")", Duration = 2.5, Icon = "info" })
         end
+    end
+})
+
+TabRewards:Section({ Title = "Auto Chest Open & Legendary Item Finder" })
+
+TabRewards:Toggle({
+    Title = "Auto Open All Explore Chests",
+    Desc = "Automatically scans, opens, and claims all explore chests in the world for eggs, gems & coins",
+    Value = false,
+    Callback = function(state)
+        HubState.AutoOpenChests = state
+        if state then
+            task.spawn(function()
+                local claimed = ClaimNearbyExploreChests()
+                WindUI:Notify({
+                    Title = "Chests Opened!",
+                    Content = string.format("Instantly claimed %d explore chests!", claimed),
+                    Duration = 3,
+                    Icon = "package-open"
+                })
+            end)
+        end
+    end
+})
+
+TabRewards:Button({
+    Title = "Open All Explore Chests Now",
+    Desc = "Instantly invokes ReqClaimExploreReward on all 60+ active chests on the server",
+    Callback = function()
+        local count = ClaimNearbyExploreChests()
+        WindUI:Notify({
+            Title = "Explore Chests Claimed",
+            Content = string.format("Successfully opened and collected %d chests!", count),
+            Duration = 3.5,
+            Icon = "gift"
+        })
+    end
+})
+
+TabRewards:Toggle({
+    Title = "Auto Find Legendary Items & Drops",
+    Desc = "Automatically tracks and collects legendary item drops, rare pet eggs, and high-tier loot",
+    Value = false,
+    Callback = function(state)
+        HubState.AutoFindLegendary = state
+        if state then
+            task.spawn(function()
+                local count = FindAndCollectLegendaryItems()
+                WindUI:Notify({
+                    Title = "Legendary Item Finder",
+                    Content = string.format("Scanned world and collected %d items!", count),
+                    Duration = 3,
+                    Icon = "sparkles"
+                })
+            end)
+        end
+    end
+})
+
+TabRewards:Button({
+    Title = "Find & Collect Legendary Items Now",
+    Desc = "One-click sweeps the world for legendary drops, rare chest rewards, and eggs",
+    Callback = function()
+        local count = FindAndCollectLegendaryItems()
+        WindUI:Notify({
+            Title = "Legendary Sweeper",
+            Content = string.format("Collected %d rare items and chest rewards!", count),
+            Duration = 3.5,
+            Icon = "zap"
+        })
     end
 })
 
@@ -2939,6 +3335,12 @@ task.spawn(function()
                 end
                 if HubState.AutoDismissPopups and not IsInBattle() then
                     DismissBlockingWindows()
+                end
+                if HubState.AutoOpenChests and not IsInBattle() then
+                    task.spawn(ClaimNearbyExploreChests)
+                end
+                if HubState.AutoFindLegendary and not IsInBattle() then
+                    task.spawn(FindAndCollectLegendaryItems)
                 end
             end
 
