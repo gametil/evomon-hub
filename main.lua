@@ -169,6 +169,10 @@ local HubState = {
     -- ESP
     EvomonESP = false,
     ESPObjects = {},
+    -- Pokemon / Evomon Species Catch Target
+    SelectedSpeciesCatch = nil,
+    ManualCatchTargetUid = nil,
+    ActiveCatchRoutineRunning = false,
     -- Player Mods
     SpeedEnabled = false,
     CustomSpeed = 16,
@@ -868,6 +872,125 @@ local function GetCreaturesNearPos(targetPos, maxRadius)
     end
     table.sort(nearby, function(a, b) return a.islandDistance < b.islandDistance end)
     return nearby
+end
+
+-- Get unique list of wild Evomon / Pokemon species available on the server
+local function GetUniqueWildSpecies()
+    local all = FetchWildCreatures()
+    local speciesMap = {}
+    for _, c in ipairs(all) do
+        local name = c.name
+        if name and not speciesMap[name] and not string.find(name, "测试") and not string.find(name, "boss摆放") and not string.find(name, "ID_") then
+            speciesMap[name] = {
+                name = name,
+                cfgId = c.cfgId,
+                sampleUid = c.uid,
+                closestDistance = c.distance,
+                count = 1
+            }
+        elseif name and speciesMap[name] then
+            speciesMap[name].count = speciesMap[name].count + 1
+            if c.distance < speciesMap[name].closestDistance then
+                speciesMap[name].closestDistance = c.distance
+                speciesMap[name].sampleUid = c.uid
+            end
+        end
+    end
+
+    local list = {}
+    for _, item in pairs(speciesMap) do
+        table.insert(list, item)
+    end
+    table.sort(list, function(a, b) return a.name < b.name end)
+    return list
+end
+
+-- Find and Catch a specific Pokemon / Evomon species or UID
+local function CatchSpecificEvomon(speciesNameOrUid)
+    if HubState.ActiveCatchRoutineRunning then
+        return false, "Catch routine already in progress!"
+    end
+
+    local all = FetchWildCreatures()
+    if #all == 0 then
+        return false, "No wild Evomons currently spawned on the server."
+    end
+
+    local target = nil
+    -- Check if directly matching UID or target species name
+    for _, c in ipairs(all) do
+        if tostring(c.uid) == tostring(speciesNameOrUid) then
+            target = c
+            break
+        end
+    end
+
+    if not target and speciesNameOrUid then
+        local search = tostring(speciesNameOrUid):lower()
+        for _, c in ipairs(all) do
+            if c.name and (c.name:lower() == search or string.find(c.name:lower(), search)) then
+                target = c
+                break
+            end
+        end
+    end
+
+    -- If no target specified or not found, fallback to closest wild Evomon
+    if not target then
+        target = all[1]
+    end
+
+    if not target then
+        return false, "Target Evomon not found."
+    end
+
+    HubState.ActiveCatchRoutineRunning = true
+    HubState.ManualCatchTargetUid = tostring(target.uid)
+
+    task.spawn(function()
+        -- Switch to best elemental counter pet if enabled
+        if HubState.SmartCombatAI and HubState.AutoSwitchPetCounter and target.cfgId then
+            local petCfg = PetConfig and PetConfig[target.cfgId]
+            if petCfg and petCfg.mainElement then
+                AlignPetCounter(petCfg.mainElement)
+            end
+        end
+
+        -- Safe navigate or blink to target position
+        SafeMoveTo(target.cframe, HubState.ArrivalDistance or 8, 15)
+        task.wait(HubState.PostTpDelay or 0.3)
+
+        -- Engage in Battle
+        if not IsInBattle() and BattleService and BattleService.enterPetBattle then
+            pcall(function()
+                BattleService.enterPetBattle(tostring(target.uid))
+            end)
+        end
+
+        -- Monitor combat start and trigger Auto-Catch
+        local startTime = os.clock()
+        while (os.clock() - startTime) < 8 do
+            local inBat, _ = IsInBattle()
+            if inBat then
+                task.wait(0.2)
+                pcall(function()
+                    local bc = require(ReplicatedStorage.Controller.BattleCatchPetWindowController)
+                    if bc and bc.triggerAutoCatchButton then
+                        bc.triggerAutoCatchButton()
+                    end
+                end)
+                break
+            end
+            task.wait(0.2)
+        end
+
+        task.delay(10, function()
+            HubState.ActiveCatchRoutineRunning = false
+            HubState.ManualCatchTargetUid = nil
+        end)
+    end)
+
+    return true, target
 end
 
 -- ====================
@@ -2114,6 +2237,109 @@ TabRadar:Button({
     end
 })
 
+TabRadar:Section({ Title = "Pokemon / Evomon Finder & Auto Catch" })
+
+local SpeciesDropdownValues = {}
+local function RefreshSpeciesList()
+    local list = GetUniqueWildSpecies()
+    local names = {}
+    for _, s in ipairs(list) do
+        table.insert(names, string.format("%s (%d wild | ~%dm)", s.name, s.count, math.floor(s.closestDistance)))
+    end
+    if #names == 0 then
+        names = { "(No wild species found - click Refresh)" }
+    end
+    SpeciesDropdownValues = names
+    return names
+end
+RefreshSpeciesList()
+
+local SelectedWildSpeciesName = nil
+
+local SpeciesDropdown = TabRadar:Dropdown({
+    Title = "Select Pokemon / Evomon To Catch",
+    Desc = "Lists all wild Pokemon currently spawned in the game world",
+    Values = SpeciesDropdownValues,
+    Value = SpeciesDropdownValues[1],
+    Callback = function(val)
+        local rawName = val:match("^([%a%s]+)%s*%(") or val
+        SelectedWildSpeciesName = rawName:gsub("^%s*(.-)%s*$", "%1")
+        HubState.SelectedSpeciesCatch = SelectedWildSpeciesName
+    end
+})
+
+TabRadar:Button({
+    Title = "Find & Catch Selected Pokemon",
+    Desc = "Locates the selected Pokemon anywhere in the world, navigates to it, engages, and catches it!",
+    Callback = function()
+        local nameToCatch = SelectedWildSpeciesName or HubState.SelectedSpeciesCatch
+        if not nameToCatch or nameToCatch:find("No wild species") then
+            local all = FetchWildCreatures()
+            if #all > 0 then nameToCatch = all[1].name end
+        end
+
+        local ok, targetOrErr = CatchSpecificEvomon(nameToCatch)
+        if ok and type(targetOrErr) == "table" then
+            WindUI:Notify({
+                Title = "Catching " .. targetOrErr.name .. "!",
+                Content = string.format("Level %d | Distance: %d studs. Navigating and deploying PokeBall!", targetOrErr.level, math.floor(targetOrErr.distance)),
+                Duration = 4,
+                Icon = "sparkles"
+            })
+        else
+            WindUI:Notify({
+                Title = "Catch Notice",
+                Content = tostring(targetOrErr or "Looking for target..."),
+                Duration = 3,
+                Icon = "alert-circle"
+            })
+        end
+    end
+})
+
+TabRadar:Button({
+    Title = "Refresh Wild Pokemon List",
+    Desc = "Rescans all spawned Pokemon on the server and updates the dropdown selector",
+    Callback = function()
+        HubState.LastCreatureScan = 0
+        local names = RefreshSpeciesList()
+        pcall(function()
+            if SpeciesDropdown and SpeciesDropdown.SetValues then
+                SpeciesDropdown:SetValues(names)
+            end
+        end)
+        WindUI:Notify({
+            Title = "Wild Pokemon Scanned",
+            Content = string.format("Found %d unique species currently alive on the map.", #names),
+            Duration = 2.5,
+            Icon = "refresh-cw"
+        })
+    end
+})
+
+TabRadar:Button({
+    Title = "Catch Closest Pokemon Now",
+    Desc = "Immediately finds and catches whatever Pokemon is closest to you",
+    Callback = function()
+        local ok, targetOrErr = CatchSpecificEvomon(nil)
+        if ok and type(targetOrErr) == "table" then
+            WindUI:Notify({
+                Title = "Catching " .. targetOrErr.name .. "!",
+                Content = string.format("Level %d | Navigating and throwing ball!", targetOrErr.level),
+                Duration = 3.5,
+                Icon = "zap"
+            })
+        else
+            WindUI:Notify({
+                Title = "Notice",
+                Content = tostring(targetOrErr or "Could not find nearby target."),
+                Duration = 2.5,
+                Icon = "alert-circle"
+            })
+        end
+    end
+})
+
 TabRadar:Section({ Title = "Target & Active Battles" })
 
 TabRadar:Button({
@@ -2466,10 +2692,13 @@ table.insert(HubState.Connections, RunService.Heartbeat:Connect(function()
     if HubState.LastBattleState == false and currentCombat == true then
         -- Enable native Auto-Battle on combat start to ensure server rounds execute seamlessly
         SetAutoBattleState(true)
-        if HubState.AutoQuest then
+        -- Auto-Catch if AutoQuest catch objective OR manual Find & Catch routine is active
+        if HubState.AutoQuest or HubState.ActiveCatchRoutineRunning or HubState.ManualCatchTargetUid then
             pcall(function()
                 local bc = require(ReplicatedStorage.Controller.BattleCatchPetWindowController)
-                if bc and bc.triggerAutoCatchButton then bc.triggerAutoCatchButton() end
+                if bc and bc.triggerAutoCatchButton then
+                    bc.triggerAutoCatchButton()
+                end
             end)
         end
         -- Trigger first combat move immediately on battle start
