@@ -1029,35 +1029,142 @@ local function ChallengeSelectedBoss(bossUid)
     return true, target
 end
 
--- Auto Chest Open Routine: Interacts with & claims all explore chests on the map
-local function ClaimNearbyExploreChests()
+-- Comprehensive Universal Auto Chest Opener: Interacts with & claims ALL chests across the game
+local function OpenAllWorldChests()
     local myUserId = LocalPlayer.UserId
-    local cs = nil
-    pcall(function() cs = require(ReplicatedStorage.Script.Chest.ChestService) end)
-    if not cs or not cs.getChests then return 0 end
-
-    local remote = Remote:FindFirstChild("Chest") and Remote.Chest:FindFirstChild("ReqClaimExploreReward")
-    if not remote then return 0 end
-
-    local chests = cs.getChests()
-    if not chests then return 0 end
-
     local claimed = 0
-    for uid, data in pairs(chests) do
-        local sd = data.sourceData
-        if sd and (sd.owner == myUserId or sd.owner == 0 or sd.owner == nil) then
-            local ok, res = pcall(function()
-                return remote:InvokeServer(tostring(uid))
-            end)
-            if ok and (res == 20000 or res == 20001) then
-                claimed = claimed + 1
-                HubState.OpenedChestCount = HubState.OpenedChestCount + 1
-                task.wait(0.08)
+    local openedUids = {}
+
+    -- Method 1: Client ChestService + ChestConfig scan (ReqClaimExploreReward & all remote variants)
+    pcall(function()
+        local cs = nil
+        pcall(function() cs = require(ReplicatedStorage.Script.Chest.ChestService) end)
+        local chestRemoteFolder = Remote:FindFirstChild("Chest")
+
+        if cs and cs.getChests and chestRemoteFolder then
+            local chests = cs.getChests()
+            if chests and typeof(chests) == "table" then
+                for uid, data in pairs(chests) do
+                    local strUid = tostring(uid)
+                    if not openedUids[strUid] then
+                        local sd = data.sourceData
+                        local isEligible = not sd or (sd.owner == myUserId or sd.owner == 0 or sd.owner == nil)
+                        if isEligible then
+                            for _, child in ipairs(chestRemoteFolder:GetChildren()) do
+                                if child:IsA("RemoteFunction") then
+                                    local ok, res = pcall(function()
+                                        return child:InvokeServer(strUid)
+                                    end)
+                                    if ok and (res == 20000 or res == 20001 or res == 0 or res == true) then
+                                        claimed = claimed + 1
+                                        HubState.OpenedChestCount = HubState.OpenedChestCount + 1
+                                        openedUids[strUid] = true
+                                        task.wait(0.05)
+                                        break
+                                    end
+                                elseif child:IsA("RemoteEvent") then
+                                    pcall(function()
+                                        child:FireServer(strUid)
+                                    end)
+                                end
+                            end
+                        end
+                    end
+                end
             end
         end
-    end
+    end)
+
+    -- Method 2: ExploreChestConfig / ChestConfig ID range brute-claim
+    pcall(function()
+        local chestRemoteFolder = Remote:FindFirstChild("Chest")
+        local reqClaim = chestRemoteFolder and (chestRemoteFolder:FindFirstChild("ReqClaimExploreReward") or chestRemoteFolder:FindFirstChild("ReqOpenChest"))
+        if reqClaim and reqClaim:IsA("RemoteFunction") then
+            -- Query static ChestConfig / ExploreChestConfig for all valid chest IDs
+            local chestConfig = nil
+            pcall(function()
+                chestConfig = require(ReplicatedStorage.Config.ExploreChestConfig)
+            end)
+            if not chestConfig then
+                pcall(function()
+                    chestConfig = require(ReplicatedStorage.Config.ChestConfig)
+                end)
+            end
+
+            if chestConfig and typeof(chestConfig) == "table" then
+                for chestId, _ in pairs(chestConfig) do
+                    local strId = tostring(chestId)
+                    if not openedUids[strId] then
+                        local ok, res = pcall(function()
+                            return reqClaim:InvokeServer(strId)
+                        end)
+                        if ok and (res == 20000 or res == 20001 or res == 0 or res == true) then
+                            claimed = claimed + 1
+                            HubState.OpenedChestCount = HubState.OpenedChestCount + 1
+                            openedUids[strId] = true
+                            task.wait(0.05)
+                        end
+                    end
+                end
+            else
+                -- Fallback ID probe (1 to 100 common explore chest indices)
+                for id = 1, 80 do
+                    local strId = tostring(id)
+                    if not openedUids[strId] then
+                        local ok, res = pcall(function()
+                            return reqClaim:InvokeServer(strId)
+                        end)
+                        if ok and (res == 20000 or res == 20001) then
+                            claimed = claimed + 1
+                            HubState.OpenedChestCount = HubState.OpenedChestCount + 1
+                            openedUids[strId] = true
+                            task.wait(0.05)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    -- Method 3: Workspace 3D Chest Model & ProximityPrompt collector
+    pcall(function()
+        local candidates = {
+            workspace:FindFirstChild("[SpawnObjectPool]"),
+            workspace:FindFirstChild("Resources"),
+            workspace:FindFirstChild("Chests"),
+            workspace:FindFirstChild("Map"),
+            workspace
+        }
+        for _, container in ipairs(candidates) do
+            if container then
+                for _, obj in ipairs(container:GetDescendants()) do
+                    if obj:IsA("ProximityPrompt") and obj.Enabled then
+                        local promptText = (obj.ObjectText .. " " .. obj.ActionText .. " " .. obj.Parent.Name):lower()
+                        if string.find(promptText, "chest") or string.find(promptText, "box") or string.find(promptText, "treasure") or string.find(promptText, "crate") then
+                            local partPos = obj.Parent:GetPivot().Position
+                            local root = GetRootPart()
+                            local dist = root and (root.Position - partPos).Magnitude or 9999
+                            if dist < 60 then
+                                pcall(function()
+                                    if fireproximityprompt then
+                                        fireproximityprompt(obj)
+                                        claimed = claimed + 1
+                                        HubState.OpenedChestCount = HubState.OpenedChestCount + 1
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
     return claimed
 end
+
+-- Backward compatibility alias
+local ClaimNearbyExploreChests = OpenAllWorldChests
 
 -- Auto Find & Claim Legendary Items / Mythic Drops across the world
 local function FindAndCollectLegendaryItems()
@@ -2787,18 +2894,18 @@ TabRewards:Button({
 TabRewards:Section({ Title = "Auto Chest Open & Legendary Item Finder" })
 
 TabRewards:Toggle({
-    Title = "Auto Open All Explore Chests",
-    Desc = "Automatically scans, opens, and claims all explore chests in the world for eggs, gems & coins",
+    Title = "Auto Open ALL Chests (Infinite Loop)",
+    Desc = "Continuously scans and unlocks every chest in the entire world (Explore, Spawn, Treasure & Crates)",
     Value = false,
     Callback = function(state)
         HubState.AutoOpenChests = state
         if state then
             task.spawn(function()
-                local claimed = ClaimNearbyExploreChests()
+                local claimed = OpenAllWorldChests()
                 WindUI:Notify({
                     Title = "Chests Opened!",
-                    Content = string.format("Instantly claimed %d explore chests!", claimed),
-                    Duration = 3,
+                    Content = string.format("Instantly collected %d chests across the world!", claimed),
+                    Duration = 3.5,
                     Icon = "package-open"
                 })
             end)
@@ -2807,14 +2914,14 @@ TabRewards:Toggle({
 })
 
 TabRewards:Button({
-    Title = "Open All Explore Chests Now",
-    Desc = "Instantly invokes ReqClaimExploreReward on all 60+ active chests on the server",
+    Title = "Open ALL Chests Now (One-Click)",
+    Desc = "Instantly claims all explore chests, server chest configs, and nearby treasure crates",
     Callback = function()
-        local count = ClaimNearbyExploreChests()
+        local count = OpenAllWorldChests()
         WindUI:Notify({
-            Title = "Explore Chests Claimed",
-            Content = string.format("Successfully opened and collected %d chests!", count),
-            Duration = 3.5,
+            Title = "All Chests Claimed!",
+            Content = string.format("Successfully opened %d chests! Total Opened: %d", count, HubState.OpenedChestCount),
+            Duration = 4,
             Icon = "gift"
         })
     end
@@ -3465,7 +3572,8 @@ _G.EvomonHub = {
         end
     end,
     SafeMoveTo = SafeMoveTo,
-    TeleportTo = TeleportTo
+    TeleportTo = TeleportTo,
+    OpenAllChests = OpenAllWorldChests
 }
 
 WindUI:Notify({
